@@ -1,0 +1,11 @@
+# Nur Werkzeug-Konfiguration – dieses Repository wird nicht als Paket gebaut.
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

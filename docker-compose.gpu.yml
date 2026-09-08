@@ -1,0 +1,20 @@
+# Override für NVIDIA-GPUs (benötigt das NVIDIA Container Toolkit):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Baut dasselbe Image mit CUDA-PyTorch und reicht die GPU durch.
+services:
+  omnivoice:
+    build:
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL_CUDA:-https://download.pytorch.org/whl/cu128}
+    image: omnivoice-docker:cuda
+    environment:
+      OMNIVOICE_DEVICE: ${OMNIVOICE_DEVICE_GPU:-cuda}
+      OMNIVOICE_DTYPE: ${OMNIVOICE_DTYPE_GPU:-float16}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OmniVoice</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎙️</text></svg>"
+    />
+  </head>
+  <body>
+    <header>
+      <h1>🎙️ OmniVoice</h1>
+      <div id="status" class="status loading">
+        <span class="dot"></span><span id="status-text">Verbinde …</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="card">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-mode="auto" role="tab">
+            Automatisch
+          </button>
+          <button class="tab" data-mode="clone" role="tab">Stimme klonen</button>
+          <button class="tab" data-mode="design" role="tab">
+            Stimme entwerfen
+          </button>
+        </div>
+        <p id="mode-hint" class="hint">
+          Das Modell wählt selbst eine passende Stimme.
+        </p>
+
+        <label for="text">Text</label>
+        <textarea
+          id="text"
+          rows="5"
+          placeholder="Gib hier den Text ein, der gesprochen werden soll …"
+        ></textarea>
+        <div class="row between">
+          <small id="charcount">0 Zeichen</small>
+          <small>Steuerzeichen wie <code>[laughter]</code> sind erlaubt.</small>
+        </div>
+
+        <label for="language">Sprache</label>
+        <select id="language">
+          <option value="">Automatisch erkennen</option>
+        </select>
+
+        <!-- Voice cloning -->
+        <fieldset id="pane-clone" class="pane" hidden>
+          <legend>Referenzstimme</legend>
+          <label for="ref-audio">Referenz-Audio (3–10 Sekunden)</label>
+          <input id="ref-audio" type="file" accept="audio/*" />
+          <div class="row">
+            <button id="record" type="button" class="secondary">
+              ⏺ Aufnehmen
+            </button>
+            <small id="record-hint">oder Datei auswählen</small>
+          </div>
+          <audio id="ref-preview" controls hidden></audio>
+          <label for="ref-text">Referenztext (optional)</label>
+          <textarea
+            id="ref-text"
+            rows="2"
+            placeholder="Transkript des Referenz-Audios."
+          ></textarea>
+          <small id="asr-hint" class="hint"></small>
+        </fieldset>
+
+        <!-- Voice design -->
+        <fieldset id="pane-design" class="pane" hidden>
+          <legend>Stimm-Eigenschaften</legend>
+          <div id="design-grid" class="grid"></div>
+          <small class="hint">
+            Nicht gesetzte Eigenschaften überlässt du dem Modell.
+          </small>
+        </fieldset>
+
+        <details id="advanced">
+          <summary>Erweiterte Einstellungen</summary>
+          <div class="grid">
+            <div>
+              <label for="speed">Tempo <span id="speed-value">1.00</span></label>
+              <input
+                id="speed"
+                type="range"
+                min="0.5"
+                max="1.5"
+                step="0.05"
+                value="1"
+              />
+            </div>
+            <div>
+              <label for="num-step"
+                >Diffusionsschritte <span id="num-step-value">32</span></label
+              >
+              <input
+                id="num-step"
+                type="range"
+                min="4"
+                max="64"
+                step="1"
+                value="32"
+              />
+            </div>
+            <div>
+              <label for="guidance"
+                >Guidance (CFG) <span id="guidance-value">2.0</span></label
+              >
+              <input
+                id="guidance"
+                type="range"
+                min="0"
+                max="4"
+                step="0.1"
+                value="2"
+              />
+            </div>
+            <div>
+              <label for="duration">Feste Länge (Sekunden)</label>
+              <input id="duration" type="number" min="0" step="0.5" placeholder="automatisch" />
+            </div>
+          </div>
+          <div class="row">
+            <label class="check"
+              ><input id="denoise" type="checkbox" checked /> Rauschunterdrückung</label
+            >
+            <label class="check"
+              ><input id="normalize" type="checkbox" /> Zahlen ausschreiben</label
+            >
+          </div>
+        </details>
+
+        <button id="generate" class="primary">Sprache erzeugen</button>
+        <p id="error" class="error" hidden></p>
+      </section>
+
+      <section id="result" class="card" hidden>
+        <h2>Ergebnis</h2>
+        <audio id="output" controls></audio>
+        <div class="row between">
+          <small id="result-meta"></small>
+          <a id="download" download="omnivoice.wav" class="secondary">
+            ⬇ Herunterladen
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span id="footer-info"></span>
+      <a href="https://github.com/k2-fsa/OmniVoice" target="_blank" rel="noreferrer"
+        >OmniVoice</a
+      >
+      ·
+      <a href="/docs">API-Dokumentation</a>
+    </footer>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

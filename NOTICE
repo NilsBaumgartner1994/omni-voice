@@ -1,0 +1,12 @@
+omni-voice (Docker-Setup)
+Copyright 2026 omni-voice Docker contributors
+
+Dieses Repository enthält ausschließlich eigene Container-, Server- und
+UI-Dateien. Das eigentliche TTS-Modell und die Bibliothek stammen von:
+
+  OmniVoice — https://github.com/k2-fsa/OmniVoice
+  Copyright 2026 Xiaomi Corp., lizenziert unter Apache License 2.0
+
+Das Paket wird zur Laufzeit aus PyPI installiert und die Modellgewichte
+werden von Hugging Face geladen; keine Upstream-Quelldateien sind hier
+eingecheckt.

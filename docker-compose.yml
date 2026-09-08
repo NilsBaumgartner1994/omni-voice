@@ -1,0 +1,39 @@
+# OmniVoice lokal starten:
+#   docker compose up -d --build                                  # CPU (Standard)
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#                                                                 # NVIDIA-GPU
+#
+# Danach: http://localhost:7860
+services:
+  omnivoice:
+    build:
+      context: .
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+        OMNIVOICE_VERSION: ${OMNIVOICE_VERSION:-0.2.1}
+    image: omnivoice-docker:cpu
+    container_name: omnivoice
+    ports:
+      - "${OMNIVOICE_PORT:-7860}:7860"
+    environment:
+      OMNIVOICE_MODEL: ${OMNIVOICE_MODEL:-k2-fsa/OmniVoice}
+      OMNIVOICE_DEVICE: ${OMNIVOICE_DEVICE:-cpu}
+      OMNIVOICE_DTYPE: ${OMNIVOICE_DTYPE:-}
+      OMNIVOICE_ENGINE: ${OMNIVOICE_ENGINE:-omnivoice}
+      OMNIVOICE_LOAD_ASR: ${OMNIVOICE_LOAD_ASR:-false}
+      OMNIVOICE_ASR_MODEL: ${OMNIVOICE_ASR_MODEL:-openai/whisper-large-v3-turbo}
+      OMNIVOICE_MAX_TEXT_CHARS: ${OMNIVOICE_MAX_TEXT_CHARS:-2000}
+      # Optionaler Hugging-Face-Spiegel, falls huggingface.co blockiert ist.
+      HF_ENDPOINT: ${HF_ENDPOINT:-}
+      # Nach `prefetch` auf 1 setzen für vollständig offline Betrieb.
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-}
+      # Threads für die CPU-Inferenz (leer = alle Kerne).
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-}
+    volumes:
+      # Modellgewichte überleben `docker compose down` und Neubauten.
+      - omnivoice-models:/models
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  omnivoice-models:
