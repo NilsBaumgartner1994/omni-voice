@@ -14,7 +14,7 @@ def encode_wav(samples: Sequence[float], sampling_rate: int) -> bytes:
 
     Accepts plain sequences as well as numpy arrays (fast path).
     """
-    pcm_bytes = _to_pcm16(samples)
+    pcm_bytes = to_pcm16(samples)
 
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as handle:
@@ -25,7 +25,8 @@ def encode_wav(samples: Sequence[float], sampling_rate: int) -> bytes:
     return buffer.getvalue()
 
 
-def _to_pcm16(samples: Sequence[float]) -> bytes:
+def to_pcm16(samples: Sequence[float]) -> bytes:
+    """Float-Samples in [-1, 1] als 16-Bit-PCM (little endian)."""
     numpy = sys.modules.get("numpy")
     if numpy is not None and isinstance(samples, numpy.ndarray):
         clipped = numpy.clip(samples, -1.0, 1.0) * 32767.0

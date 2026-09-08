@@ -13,6 +13,17 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+from .audio import (
+    API_DEFAULT_FORMAT,
+    FORMATS,
+    AudioEncodeError,
+    available_formats,
+    default_download_format,
+    encode,
+    mp3_supported,
+    normalize_format,
+    wav_to_mp3,
+)
 from .config import Settings, default_library_dir
 from .engine import BaseEngine, SynthesisError, SynthesisRequest, build_engine
 from .library import (
@@ -26,7 +37,6 @@ from .library import (
 from .timing import DurationForecaster, RequestFeatures
 from .voice_design import VOICE_DESIGN_CATEGORIES
 from .voices import VoiceService
-from .wav import encode_wav
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +71,20 @@ def _clean(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _audio_format(value: Any, default: str = API_DEFAULT_FORMAT) -> str:
+    """Gewünschtes Ausgabeformat prüfen (unbekannt -> 422, kein ffmpeg -> 503)."""
+    try:
+        key = normalize_format(_clean(value), default)
+    except AudioEncodeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if key == "mp3" and not mp3_supported():
+        raise HTTPException(
+            status_code=503,
+            detail="MP3 ist auf diesem Server nicht verfügbar (ffmpeg fehlt).",
+        )
+    return key
 
 
 def create_app(
@@ -154,6 +178,10 @@ def create_app(
             "asr_enabled": settings.load_asr,
             "asr_model": settings.asr_model if settings.load_asr else None,
             "voice_design": VOICE_DESIGN_CATEGORIES,
+            # Welche Formate ausgeliefert werden können (MP3 nur mit ffmpeg)
+            # und was das Download-Menü vorauswählt.
+            "audio_formats": [fmt.as_dict() for fmt in available_formats()],
+            "default_download_format": default_download_format(),
             "timing_history": forecaster.history(engine.env_key),
             # Schlüssel der geladenen Gewichte: ändert er sich, müssen die
             # gespeicherten Stimmen neu berechnet werden.
@@ -245,6 +273,10 @@ def create_app(
         if mode not in ("auto", "clone", "design"):
             raise HTTPException(status_code=422, detail=f"Unbekannter Modus: {mode}")
 
+        # Ohne `format` bleibt es bei WAV -- die Oberfläche holt sich das
+        # MP3 später über /api/convert, statt neu zu synthetisieren.
+        audio_format = _audio_format(data.get("format"))
+
         # Eine gespeicherte Person ersetzt den Upload: ihr Referenz-Audio liegt
         # schon in der Bibliothek, und die daraus berechnete Stimme womöglich
         # auch -- dann entfällt die Vorbereitung komplett.
@@ -317,17 +349,76 @@ def create_app(
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-        wav_bytes = encode_wav(samples, engine.sampling_rate)
+        spec = FORMATS[audio_format]
+        try:
+            payload = await run_in_threadpool(
+                encode,
+                samples,
+                engine.sampling_rate,
+                audio_format,
+                bitrate=settings.mp3_bitrate,
+            )
+        except AudioEncodeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
         return Response(
-            content=wav_bytes,
-            media_type="audio/wav",
+            content=payload,
+            media_type=spec.media_type,
             headers={
-                "Content-Disposition": 'attachment; filename="omnivoice.wav"',
+                "Content-Disposition": (
+                    f'attachment; filename="omnivoice{spec.suffix}"'
+                ),
                 "X-OmniVoice-Sampling-Rate": str(engine.sampling_rate),
                 "X-OmniVoice-Duration-Seconds": (
                     f"{len(samples) / engine.sampling_rate:.2f}"
                 ),
                 "X-OmniVoice-Generation-Seconds": f"{elapsed:.2f}",
+            },
+        )
+
+    # -- Formatwechsel ----------------------------------------------------
+    @app.post("/api/convert")
+    async def convert(request: Request) -> Response:
+        """Fertiges WAV in ein anderes Format umrechnen.
+
+        Die Oberfläche erzeugt immer WAV und wandelt erst beim Herunterladen
+        um: eine zweite Synthese wäre teuer und käme auch nicht wieder
+        genauso heraus.
+        """
+        form = await request.form()
+        upload = form.get("audio")
+        if upload is None or not hasattr(upload, "read"):
+            raise HTTPException(
+                status_code=422, detail="Bitte eine WAV-Datei mitschicken."
+            )
+        too_large = HTTPException(
+            status_code=413,
+            detail="Das Audio ist zu groß "
+            f"(max. {settings.max_convert_bytes // (1024 * 1024)} MB).",
+        )
+        if (upload.size or 0) > settings.max_convert_bytes:
+            raise too_large
+        payload = await upload.read()
+        if len(payload) > settings.max_convert_bytes:
+            raise too_large
+        if not payload:
+            raise HTTPException(status_code=422, detail="Die Datei ist leer.")
+
+        target = _audio_format(form.get("format"), default="mp3")
+        spec = FORMATS[target]
+        if target != "wav":
+            try:
+                payload = await run_in_threadpool(
+                    wav_to_mp3, payload, bitrate=settings.mp3_bitrate
+                )
+            except AudioEncodeError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return Response(
+            content=payload,
+            media_type=spec.media_type,
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="omnivoice{spec.suffix}"'
+                )
             },
         )
 

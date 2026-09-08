@@ -186,6 +186,23 @@ button:disabled {
   justify-content: space-between;
 }
 
+/* Format-Auswahl direkt neben dem Download-Knopf: kein Block, nur so
+   breit wie nötig. */
+.download-row {
+  margin-top: 0;
+  gap: 0.4rem;
+}
+
+select.inline-select {
+  width: auto;
+  padding: 0.55rem 0.5rem;
+}
+
+a.secondary[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: progress;
+}
+
 .check {
   display: inline-flex;
   align-items: center;
