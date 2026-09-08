@@ -234,6 +234,52 @@ small,
   }
 }
 
+.eta {
+  display: block;
+  margin: 0.5rem 0 0;
+  min-height: 1.3em;
+}
+
+.progress {
+  margin-top: 0.9rem;
+}
+
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.3s linear;
+}
+
+/* Past the forecast the width says nothing any more, so the bar switches
+   to a moving pattern: still alive, duration unknown. */
+.progress-fill.indeterminate {
+  width: 100% !important;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--accent) 0 10px,
+    var(--border) 10px 20px
+  );
+  animation: slide 1s linear infinite;
+}
+
+@keyframes slide {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 28px 0;
+  }
+}
+
 .error {
   color: var(--error);
   border: 1px solid var(--error);

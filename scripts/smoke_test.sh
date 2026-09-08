@@ -36,4 +36,18 @@ assert seconds > 0.2, f"Audio ist zu kurz: {seconds}s"
 print(f"OK: {seconds:.2f}s Audio erzeugt -> {sys.argv[1]}")
 PY
 
+# Der eben gemessene Lauf muss in der Dauerprognose auftauchen.
+curl -fsS "${BASE_URL}/api/estimate?text_chars=100" -o "${OUT}.estimate.json"
+
+python3 - "${OUT}.estimate.json" <<'PY'
+import json, sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+assert data["estimate_seconds"] is not None, f"Keine Prognose gelernt: {data}"
+assert data["history"]["count"] >= 1, f"Lauf nicht gespeichert: {data}"
+where = "dauerhaft" if data["history"]["persistent"] else "nur im Speicher"
+print(f"OK: Dauerprognose {data['estimate_seconds']}s ({where})")
+PY
+
 echo "Smoke-Test erfolgreich."

@@ -12,7 +12,7 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -85,6 +85,19 @@ class BaseEngine:
         self.status = EngineStatus(model=settings.model)
         self._lock = threading.Lock()  # serialises generation
         self._load_lock = threading.Lock()
+        # Called with (request, seconds) after every finished generation.
+        # Used for the duration forecast; set by the application.
+        self.observer: Callable[[SynthesisRequest, float], None] | None = None
+
+    @property
+    def env_key(self) -> str:
+        """Identifies the machine setup a measured runtime belongs to.
+
+        Runtimes measured on a GPU say nothing about the same job on a CPU,
+        so switching device, dtype or model starts a fresh history.
+        """
+        parts = (self.name, self.status.model, self.status.device, self.status.dtype)
+        return "|".join(str(part or "") for part in parts)
 
     # -- loading ---------------------------------------------------------
     def load(self) -> None:
@@ -123,7 +136,17 @@ class BaseEngine:
             )
         self._validate(request)
         with self._lock:
-            return self._synthesize(request)
+            # Measured inside the lock: a request that waited in the queue
+            # would otherwise poison the history with the wait time.
+            started = time.perf_counter()
+            samples = self._synthesize(request)
+            elapsed = time.perf_counter() - started
+        if self.observer is not None:
+            try:
+                self.observer(request, elapsed)
+            except Exception:  # noqa: BLE001 - bookkeeping must not fail a job
+                logger.warning("Laufzeit konnte nicht notiert werden", exc_info=True)
+        return samples
 
     def _validate(self, request: SynthesisRequest) -> None:
         """Checks that do not depend on the concrete engine."""

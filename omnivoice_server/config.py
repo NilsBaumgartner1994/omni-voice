@@ -34,6 +34,13 @@ def _env_str(name: str, default: str | None) -> str | None:
     return raw.strip()
 
 
+def _default_timing_history_path() -> str:
+    """Inside the container this lands in the ``/models`` volume, so the
+    forecast survives ``docker compose up -d`` and image rebuilds."""
+    base = _env_str("HF_HOME", None) or "/models"
+    return os.path.join(base, "generation-timings.json")
+
+
 @dataclass
 class Settings:
     """Configuration of the web server and the TTS engine."""
@@ -63,6 +70,11 @@ class Settings:
     # laptop has no spare compute anyway, so keep this at 1.
     max_concurrency: int = 1
 
+    # Measured generation times, used to forecast how long the next job will
+    # take. None keeps the history in memory only (default outside Docker).
+    timing_history_path: str | None = None
+    timing_history_size: int = 200
+
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
@@ -78,4 +90,8 @@ class Settings:
             max_ref_audio_bytes=_env_int(
                 "OMNIVOICE_MAX_REF_AUDIO_BYTES", 25 * 1024 * 1024
             ),
+            timing_history_path=_env_str(
+                "OMNIVOICE_TIMING_HISTORY", _default_timing_history_path()
+            ),
+            timing_history_size=_env_int("OMNIVOICE_TIMING_HISTORY_SIZE", 200),
         )

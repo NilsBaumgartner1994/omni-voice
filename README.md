@@ -8,6 +8,9 @@ dem eigenen Laptop läuft** – inklusive kleiner Weboberfläche und REST-API.
 * Ein Befehl zum Starten, alles läuft lokal.
 * **Kein Hugging-Face-API-Key nötig** ([warum](#brauche-ich-einen-hugging-face-token)).
 * CPU-Standard (läuft auf jedem Laptop), NVIDIA-GPU per Override-Datei.
+* Dauerprognose: die Oberfläche zeigt vorab und während der Erzeugung, wie
+  lange es voraussichtlich noch dauert – gelernt aus den bisherigen Läufen
+  auf dem eigenen Rechner.
 * Modellgewichte liegen in einem Docker-Volume und werden nur einmal geladen.
 * Smoke-Test-Modus, mit dem sich der Container ohne Modell-Download prüfen lässt.
 
@@ -88,6 +91,34 @@ Unter „Erweiterte Einstellungen“ lassen sich Tempo, Diffusionsschritte,
 Guidance-Scale und eine feste Audiolänge einstellen. Steuerzeichen aus OmniVoice
 wie `[laughter]` oder `[B EY1 S]` funktionieren direkt im Text.
 
+### Wie lange dauert das noch?
+
+Auf einer CPU dauert die Synthese je nach Text von Sekunden bis Minuten, und das
+Modell meldet dabei keinen Fortschritt. Deshalb misst der Server jeden fertigen
+Auftrag und schätzt daraus die Dauer des nächsten: unter dem Knopf steht vorab
+„Voraussichtliche Dauer: ca. 45 s“, während der Erzeugung laufen Fortschritts-
+balken und „noch ca. …“ mit, danach zeigt das Ergebnis die tatsächliche Dauer
+neben der Prognose.
+
+Die Schätzung ist keine feste Zeit pro Auftrag, sondern eine gelernte
+Geschwindigkeit (Sekunden pro Arbeitseinheit), hochgerechnet auf die aktuelle
+Eingabe:
+
+```
+Arbeit = Diffusionsschritte × Audiolänge × (2 bei Guidance > 0)
+```
+
+Die Audiolänge kommt aus der festen Länge, sonst aus Textlänge und Tempo. Ein
+einziger vorheriger Lauf reicht damit schon für eine brauchbare Schätzung *einer
+anderen* Eingabe: 60 s für einen Text ergeben rund 30 s für den halb so langen.
+Als Rate dient der Median der letzten Läufe, ein einzelner Ausreißer (anderes
+Programm hat die CPU blockiert) verzerrt sie also nicht.
+
+Die Historie hängt an Engine, Modell, Gerät und dtype – nach einem Wechsel von
+CPU auf GPU wird also neu gelernt statt falsch geschätzt. Sie liegt im
+Modell-Volume (`/models/generation-timings.json`) und überlebt damit einen
+Neustart des Containers.
+
 ![Stimme klonen](docs/screenshot-clone.png)
 
 **Hinweis zum Referenztext:** Ohne Referenztext transkribiert OmniVoice das
@@ -124,6 +155,7 @@ passend zur Maschine und benutzt ansonsten exakt die Upstream-Oberfläche.
 | `GET` | `/api/health` | Ladezustand (`200` = bereit, `503` = lädt noch) |
 | `GET` | `/api/info` | Gerät, dtype, Limits, Stimm-Eigenschaften |
 | `GET` | `/api/languages` | Liste der unterstützten Sprachen |
+| `GET` | `/api/estimate` | Dauerprognose für die angegebenen Einstellungen |
 | `POST` | `/api/tts` | Synthese, Antwort ist eine WAV-Datei |
 | `GET` | `/docs` | interaktive OpenAPI-Dokumentation |
 
@@ -156,6 +188,21 @@ Felder: `text` (Pflicht), `mode` (`auto` | `clone` | `design`), `language`,
 `instruct`, `ref_audio`, `ref_text`, `num_step`, `guidance_scale`, `speed`,
 `duration`, `denoise`, `normalize_text`.
 
+Die Antwort trägt die tatsächliche Rechenzeit im Header
+`X-OmniVoice-Generation-Seconds` (und die Audiolänge in
+`X-OmniVoice-Duration-Seconds`).
+
+`/api/estimate` beantwortet dieselbe Frage vorab – Parameter sind `text_chars`,
+`num_step`, `guidance_scale`, `speed`, `duration` und `mode`:
+
+```bash
+curl 'http://localhost:7860/api/estimate?text_chars=280&num_step=32'
+# {"estimate_seconds": 46.2, "low_seconds": 41.0, "high_seconds": 52.7,
+#  "samples": 7, "based_on": "mode", "audio_seconds": 18.7, "history": {...}}
+```
+
+Solange noch kein Auftrag gelaufen ist, ist `estimate_seconds` `null`.
+
 ---
 
 ## Konfiguration
@@ -172,6 +219,8 @@ Alles über Umgebungsvariablen, am einfachsten per `.env` (`cp .env.example .env
 | `OMNIVOICE_ASR_MODEL` | `openai/whisper-large-v3-turbo` | verwendetes Whisper-Modell |
 | `OMNIVOICE_MAX_TEXT_CHARS` | `2000` | Längenlimit pro Anfrage |
 | `OMNIVOICE_ENGINE` | `omnivoice` | `dummy` = Testton ohne Modell |
+| `OMNIVOICE_TIMING_HISTORY` | `/models/generation-timings.json` | Datei mit den gemessenen Laufzeiten (Basis der Dauerprognose) |
+| `OMNIVOICE_TIMING_HISTORY_SIZE` | `200` | Wie viele Läufe gespeichert bleiben |
 | `OMP_NUM_THREADS` | leer | CPU-Threads begrenzen |
 | `HF_ENDPOINT` | leer | Spiegelserver für Hugging Face |
 | `HF_HUB_OFFLINE` | leer | `1` = keine Netzwerkzugriffe mehr |
@@ -248,6 +297,7 @@ mehrere GB herunterzuladen.
 | Download bricht ab / hängt | `HF_ENDPOINT=https://hf-mirror.com` in die `.env` |
 | „Fehler beim Laden“ + `UnsupportedProtocol: Request URL is missing an 'http://' …` | `HF_ENDPOINT` ist leer gesetzt. Zeile aus der `.env` entfernen oder auf eine vollständige URL setzen, danach `docker compose up -d` |
 | Port 7860 belegt | `OMNIVOICE_PORT=8080` in die `.env` |
+| Prognose bleibt „noch unbekannt“ | Es ist noch kein Auftrag durchgelaufen (oder Gerät/Modell wurde gewechselt – die Historie startet dann neu) |
 | Healthcheck bleibt „starting“ | Normal, solange Gewichte geladen werden (Startphase: 30 Minuten) |
 
 ---
@@ -259,7 +309,7 @@ Dockerfile               CPU-Image (Build-Args für CUDA)
 docker-compose.yml       Standarddienst (CPU) + Volume für die Gewichte
 docker-compose.gpu.yml   Override für NVIDIA-GPUs
 docker/entrypoint.sh     serve | gradio | prefetch | infer | shell
-omnivoice_server/        FastAPI-Server, Engine-Wrapper, Weboberfläche
+omnivoice_server/        FastAPI-Server, Engine-Wrapper, Dauerprognose, Weboberfläche
 scripts/                 Modell-Prefetch und Smoke-Test
 tests/                   Tests ohne Modellgewichte
 ```

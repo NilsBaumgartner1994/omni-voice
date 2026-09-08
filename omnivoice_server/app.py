@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -14,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .config import Settings
 from .engine import BaseEngine, SynthesisError, SynthesisRequest, build_engine
+from .timing import DurationForecaster, RequestFeatures
 from .voice_design import VOICE_DESIGN_CATEGORIES
 from .wav import encode_wav
 
@@ -67,9 +69,21 @@ def create_app(
     settings: Settings | None = None,
     engine: BaseEngine | None = None,
     load_on_startup: bool = True,
+    forecaster: DurationForecaster | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     engine = engine or build_engine(settings)
+    forecaster = forecaster or DurationForecaster(
+        path=settings.timing_history_path,
+        max_samples=settings.timing_history_size,
+    )
+
+    def _remember_duration(request: SynthesisRequest, seconds: float) -> None:
+        forecaster.record(
+            RequestFeatures.from_request(request), seconds, engine.env_key
+        )
+
+    engine.observer = _remember_duration
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -87,6 +101,7 @@ def create_app(
     )
     app.state.settings = settings
     app.state.engine = engine
+    app.state.forecaster = forecaster
 
     # -- pages -----------------------------------------------------------
     @app.get("/", include_in_schema=False)
@@ -132,12 +147,50 @@ def create_app(
             "asr_enabled": settings.load_asr,
             "asr_model": settings.asr_model if settings.load_asr else None,
             "voice_design": VOICE_DESIGN_CATEGORIES,
+            "timing_history": forecaster.history(engine.env_key),
         }
 
     @app.get("/api/languages")
     def languages() -> dict[str, Any]:
         names = engine.languages()
         return {"count": len(names), "languages": names}
+
+    # -- duration forecast -----------------------------------------------
+    @app.get("/api/estimate")
+    def estimate(
+        text_chars: int = 0,
+        num_step: int = 32,
+        guidance_scale: float = 2.0,
+        speed: float = 1.0,
+        duration: float | None = None,
+        mode: str = "auto",
+    ) -> dict[str, Any]:
+        """How long a generation with these settings is expected to take.
+
+        The forecast is learned from previous runs on this machine, so it is
+        empty (``estimate_seconds: null``) until the first job has finished.
+        """
+        features = RequestFeatures(
+            text_chars=max(0, text_chars),
+            num_step=num_step,
+            guidance_scale=guidance_scale,
+            speed=speed,
+            duration=duration,
+            mode=mode,
+        )
+        prediction = forecaster.estimate(features, engine.env_key)
+        payload: dict[str, Any] = {
+            "estimate_seconds": None,
+            "low_seconds": None,
+            "high_seconds": None,
+            "samples": 0,
+            "based_on": None,
+            "audio_seconds": round(features.audio_seconds, 1),
+        }
+        if prediction is not None:
+            payload.update(prediction.as_dict())
+        payload["history"] = forecaster.history(engine.env_key)
+        return payload
 
     # -- synthesis -------------------------------------------------------
     @app.post("/api/tts")
@@ -217,7 +270,9 @@ def create_app(
             try:
                 # Generation blocks for seconds to minutes on a CPU; keeping it
                 # off the event loop lets /api/health and the UI stay responsive.
+                started = time.perf_counter()
                 samples = await run_in_threadpool(engine.synthesize, req)
+                elapsed = time.perf_counter() - started
             except SynthesisError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             except Exception as exc:  # noqa: BLE001 - reported to the caller
@@ -239,6 +294,7 @@ def create_app(
                 "X-OmniVoice-Duration-Seconds": (
                     f"{len(samples) / engine.sampling_rate:.2f}"
                 ),
+                "X-OmniVoice-Generation-Seconds": f"{elapsed:.2f}",
             },
         )
 
