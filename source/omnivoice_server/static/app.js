@@ -154,6 +154,51 @@ function buildDesignControls(categories) {
   }
 }
 
+// ---------------------------------------------------------- Klangeffekte
+// [laughter] und Verwandte: Beschriftung und Reihenfolge (alphabetisch in
+// der Sprache der Oberfläche) kommen vom Server, hier wird nur eingefügt.
+function buildSoundTags(tags) {
+  const select = $("sound-tag");
+  // Die erste Option ist der Platzhalter und bleibt stehen.
+  while (select.options.length > 1) select.remove(1);
+  for (const entry of tags) {
+    const option = document.createElement("option");
+    option.value = entry.tag;
+    option.textContent = `${entry.label} ${entry.tag}`;
+    select.appendChild(option);
+  }
+  const empty = tags.length === 0;
+  select.hidden = empty;
+  $("sound-tag-hint").hidden = empty;
+}
+
+function updateCharcount() {
+  $("charcount").textContent = `${$("text").value.length} Zeichen`;
+}
+
+function insertSoundTag(tag) {
+  if (!tag) return;
+  const field = $("text");
+  const before = field.value.slice(0, field.selectionStart);
+  const after = field.value.slice(field.selectionEnd);
+  // Ein Leerzeichen davor bzw. dahinter, außer da steht schon eines oder
+  // der Text hört dort auf.
+  const lead = !before || /\s$/.test(before) ? "" : " ";
+  const trail = !after || /^\s/.test(after) ? "" : " ";
+  const snippet = `${lead}${tag}${trail}`;
+  const limit = field.maxLength > 0 ? field.maxLength : Infinity;
+  if (before.length + after.length + snippet.length > limit) {
+    showError(I18N.t("sound_tags.too_long"));
+    return;
+  }
+  field.value = `${before}${snippet}${after}`;
+  const caret = before.length + snippet.length;
+  field.focus();
+  field.setSelectionRange(caret, caret);
+  updateCharcount();
+  scheduleEstimate();
+}
+
 // ------------------------------------------------------- Download-Format
 function buildDownloadFormats(info) {
   const formats = info.audio_formats || [];
@@ -1168,9 +1213,15 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const tab of document.querySelectorAll(".tab")) {
     tab.addEventListener("click", () => setMode(tab.dataset.mode));
   }
-  $("text").addEventListener("input", (event) => {
-    $("charcount").textContent = `${event.target.value.length} Zeichen`;
+  $("text").addEventListener("input", () => {
+    updateCharcount();
     scheduleEstimate();
+  });
+  $("sound-tag").addEventListener("change", (event) => {
+    insertSoundTag(event.target.value);
+    // Der Platzhalter steht danach wieder oben, damit derselbe Effekt
+    // gleich noch einmal gewählt werden kann.
+    event.target.selectedIndex = 0;
   });
   $("duration").addEventListener("input", scheduleEstimate);
   $("download-format").addEventListener("change", updateDownload);
@@ -1250,6 +1301,12 @@ document.addEventListener("DOMContentLoaded", () => {
     searchImages(event.currentTarget),
   );
   $("generate").disabled = true;
+  // Texte und Klangeffekte in der Sprache des Browsers (Vorgabe: Deutsch).
+  I18N.load()
+    .then(() => buildSoundTags(I18N.soundTags))
+    .catch(() => {
+      /* Ohne Übersetzungen bleibt das deutsche HTML stehen. */
+    });
   setMode("auto");
   pollHealth();
   fetchEstimate();
