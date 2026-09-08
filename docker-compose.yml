@@ -23,6 +23,8 @@ services:
       OMNIVOICE_LOAD_ASR: ${OMNIVOICE_LOAD_ASR:-false}
       OMNIVOICE_ASR_MODEL: ${OMNIVOICE_ASR_MODEL:-openai/whisper-large-v3-turbo}
       OMNIVOICE_MAX_TEXT_CHARS: ${OMNIVOICE_MAX_TEXT_CHARS:-2000}
+      # Wo die Personen/Stimmen liegen (im Container-Pfad des Daten-Volumes).
+      OMNIVOICE_LIBRARY_DIR: ${OMNIVOICE_LIBRARY_DIR:-/data/voices}
       # Optionaler Hugging-Face-Spiegel, falls huggingface.co blockiert ist.
       # Achtung: hier muss ein echter Standardwert stehen. Ein leerer Wert wird
       # von Compose als gesetztes HF_ENDPOINT="" in den Container gereicht und
@@ -35,8 +37,13 @@ services:
     volumes:
       # Modellgewichte überleben `docker compose down` und Neubauten.
       - omnivoice-models:/models
+      # Stimm-Bibliothek: bewusst getrennt vom Modell-Volume. Für einen Ordner
+      # auf dem Host (einfacher zu sichern) in der .env setzen:
+      #   OMNIVOICE_DATA_PATH=./data
+      - ${OMNIVOICE_DATA_PATH:-omnivoice-voices}:/data
     restart: unless-stopped
     stop_grace_period: 30s
 
 volumes:
   omnivoice-models:
+  omnivoice-voices:

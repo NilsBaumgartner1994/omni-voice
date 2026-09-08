@@ -34,6 +34,19 @@ def _env_str(name: str, default: str | None) -> str | None:
     return raw.strip()
 
 
+def default_library_dir() -> str:
+    """Wo die Stimm-Bibliothek liegt.
+
+    Bewusst *nicht* im Modell-Volume: Personen, Bilder und Referenzaufnahmen
+    sollen einen Modellwechsel unbeschadet überstehen. Im Container ist das
+    ``/data`` (eigenes Volume), außerhalb ein ``data/`` neben dem Projekt.
+    """
+    base = _env_str("OMNIVOICE_DATA_DIR", None)
+    if not base:
+        base = "/data" if os.path.isdir("/data") else os.path.join(os.getcwd(), "data")
+    return os.path.join(base, "voices")
+
+
 def _default_timing_history_path() -> str:
     """Inside the container this lands in the ``/models`` volume, so the
     forecast survives ``docker compose up -d`` and image rebuilds."""
@@ -65,6 +78,12 @@ class Settings:
     # Upper bounds so a single browser tab cannot lock up a laptop.
     max_text_chars: int = 2000
     max_ref_audio_bytes: int = 25 * 1024 * 1024
+    max_image_bytes: int = 5 * 1024 * 1024
+
+    # Verzeichnis der Stimm-Bibliothek (leer -> default_library_dir()).
+    library_dir: str = ""
+    # Wie viele berechnete Stimmen gleichzeitig im Arbeitsspeicher bleiben.
+    voice_cache_size: int = 8
 
     # Number of concurrent generations. The model is not thread safe, and a
     # laptop has no spare compute anyway, so keep this at 1.
@@ -90,6 +109,9 @@ class Settings:
             max_ref_audio_bytes=_env_int(
                 "OMNIVOICE_MAX_REF_AUDIO_BYTES", 25 * 1024 * 1024
             ),
+            max_image_bytes=_env_int("OMNIVOICE_MAX_IMAGE_BYTES", 5 * 1024 * 1024),
+            library_dir=_env_str("OMNIVOICE_LIBRARY_DIR", default_library_dir()),
+            voice_cache_size=_env_int("OMNIVOICE_VOICE_CACHE_SIZE", 8),
             timing_history_path=_env_str(
                 "OMNIVOICE_TIMING_HISTORY", _default_timing_history_path()
             ),

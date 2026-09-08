@@ -44,6 +44,9 @@ class SynthesisRequest:
     instruct: str | None = None
     ref_audio_path: str | None = None
     ref_text: str | None = None
+    # Vom Modell vorberechnete Stimme (siehe BaseEngine.prepare_voice).
+    # Ist sie gesetzt, wird das Referenz-Audio nicht erneut ausgewertet.
+    voice_artifact: Any = None
     num_step: int = 32
     guidance_scale: float = 2.0
     speed: float = 1.0
@@ -88,6 +91,38 @@ class BaseEngine:
         # Called with (request, seconds) after every finished generation.
         # Used for the duration forecast; set by the application.
         self.observer: Callable[[SynthesisRequest, float], None] | None = None
+
+    @property
+    def voice_key(self) -> str:
+        """Identifiziert die Gewichte, zu denen eine berechnete Stimme passt.
+
+        Alles, was aus einem Referenz-Audio gerechnet wird, gilt nur für genau
+        diese Gewichte. Wechselt das Modell (oder die Rechengenauigkeit), zeigt
+        ein neuer Schlüssel an, dass die Stimmen neu berechnet werden müssen.
+        Das Gerät steht bewusst nicht drin: dieselben Zahlen auf CPU oder GPU
+        ergeben dieselbe Stimme.
+        """
+        parts = (self.name, self.status.model, self.status.dtype)
+        return "|".join(str(part or "") for part in parts)
+
+    # -- vorberechnete Stimmen -------------------------------------------
+    def prepare_voice(self, ref_audio_path: str, ref_text: str | None) -> Any:
+        """Rechnet aus Referenz-Audio und -Text die Stimme für dieses Modell.
+
+        Das Ergebnis ist für den Rest der Anwendung undurchsichtig: es wandert
+        unverändert in :attr:`SynthesisRequest.voice_artifact` zurück.
+        """
+        raise SynthesisError(
+            f"Die Engine {self.name!r} kann keine Stimmen vorberechnen."
+        )
+
+    def serialize_voice(self, artifact: Any) -> bytes | None:
+        """Berechnete Stimme für die Platte verpacken (``None`` = geht nicht)."""
+        return None
+
+    def deserialize_voice(self, payload: bytes) -> Any | None:
+        """Gegenstück zu :meth:`serialize_voice`; ``None`` heißt neu rechnen."""
+        return None
 
     @property
     def env_key(self) -> str:
@@ -153,12 +188,16 @@ class BaseEngine:
         if not request.text.strip():
             raise SynthesisError("Bitte einen Text angeben.")
         if request.mode == "clone":
-            if not request.ref_audio_path:
+            if not request.ref_audio_path and request.voice_artifact is None:
                 raise SynthesisError(
                     "Für das Klonen einer Stimme wird eine Referenz-Audiodatei "
                     "benötigt."
                 )
-            if not request.ref_text and not self.settings.load_asr:
+            if (
+                request.voice_artifact is None
+                and not request.ref_text
+                and not self.settings.load_asr
+            ):
                 raise SynthesisError(
                     "Ohne Referenztext wird ein Whisper-ASR-Modell benötigt, das "
                     "aktuell deaktiviert ist. Bitte den Referenztext eintragen "
@@ -183,6 +222,26 @@ class DummyEngine(BaseEngine):
     """Generates a short tone. No torch, no weights, no downloads."""
 
     name = "dummy"
+
+    def prepare_voice(self, ref_audio_path: str, ref_text: str | None) -> Any:
+        import hashlib
+
+        with open(ref_audio_path, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+        return {"audio_sha256": digest, "ref_text": ref_text or ""}
+
+    def serialize_voice(self, artifact: Any) -> bytes | None:
+        import json
+
+        return json.dumps(artifact).encode("utf-8")
+
+    def deserialize_voice(self, payload: bytes) -> Any | None:
+        import json
+
+        try:
+            return json.loads(payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None
 
     def _load(self) -> None:
         self.status.device = "cpu"
@@ -291,6 +350,53 @@ class OmniVoiceEngine(BaseEngine):
     def languages(self) -> list[str]:
         return self._languages or list(_FALLBACK_LANGUAGES)
 
+    # -- vorberechnete Stimmen -------------------------------------------
+    def prepare_voice(self, ref_audio_path: str, ref_text: str | None) -> Any:
+        if self.status.state != "ready" or self.model is None:
+            raise SynthesisError(
+                "Das Modell ist noch nicht geladen (Status: "
+                f"{self.status.state}). Bitte warten und erneut versuchen."
+            )
+        with self._lock:
+            return self.model.create_voice_clone_prompt(
+                ref_audio=ref_audio_path,
+                ref_text=ref_text or None,
+            )
+
+    def serialize_voice(self, artifact: Any) -> bytes | None:
+        import io
+
+        import torch
+
+        try:
+            buffer = io.BytesIO()
+            torch.save(artifact, buffer)
+            return buffer.getvalue()
+        except Exception:  # noqa: BLE001 - Zwischenspeichern ist optional
+            logger.warning(
+                "Berechnete Stimme lässt sich nicht speichern; sie wird bei "
+                "Bedarf neu gerechnet.",
+                exc_info=True,
+            )
+            return None
+
+    def deserialize_voice(self, payload: bytes) -> Any | None:
+        import io
+
+        import torch
+
+        try:
+            # Eigene Datei aus dem eigenen Datenverzeichnis, deshalb voller
+            # Pickle-Load; passt sie nicht zum Modell, wird neu gerechnet.
+            return torch.load(
+                io.BytesIO(payload),
+                map_location=self.status.device or "cpu",
+                weights_only=False,
+            )
+        except Exception:  # noqa: BLE001 - dann eben neu rechnen
+            logger.warning("Gespeicherte Stimme unlesbar", exc_info=True)
+            return None
+
     # -- generation ------------------------------------------------------
     def _synthesize(self, request: SynthesisRequest) -> Sequence[float]:
         from omnivoice import OmniVoiceGenerationConfig
@@ -314,10 +420,13 @@ class OmniVoiceEngine(BaseEngine):
             kwargs["speed"] = float(request.speed)
 
         if request.mode == "clone":
-            kwargs["voice_clone_prompt"] = self.model.create_voice_clone_prompt(
-                ref_audio=request.ref_audio_path,
-                ref_text=request.ref_text or None,
-            )
+            if request.voice_artifact is not None:
+                kwargs["voice_clone_prompt"] = request.voice_artifact
+            else:
+                kwargs["voice_clone_prompt"] = self.model.create_voice_clone_prompt(
+                    ref_audio=request.ref_audio_path,
+                    ref_text=request.ref_text or None,
+                )
 
         if request.instruct:
             kwargs["instruct"] = request.instruct

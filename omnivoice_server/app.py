@@ -13,26 +13,24 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from .config import Settings
+from .config import Settings, default_library_dir
 from .engine import BaseEngine, SynthesisError, SynthesisRequest, build_engine
+from .library import (
+    ALLOWED_AUDIO_SUFFIXES,
+    LibraryError,
+    Upload,
+    Voice,
+    VoiceLibrary,
+    VoiceNotFound,
+)
 from .timing import DurationForecaster, RequestFeatures
 from .voice_design import VOICE_DESIGN_CATEGORIES
+from .voices import VoiceService
 from .wav import encode_wav
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-
-_ALLOWED_AUDIO_SUFFIXES = {
-    ".wav",
-    ".mp3",
-    ".flac",
-    ".ogg",
-    ".m4a",
-    ".webm",
-    ".opus",
-    ".aac",
-}
 
 
 def _as_float(value: Any, default: float) -> float:
@@ -70,9 +68,16 @@ def create_app(
     engine: BaseEngine | None = None,
     load_on_startup: bool = True,
     forecaster: DurationForecaster | None = None,
+    library: VoiceLibrary | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     engine = engine or build_engine(settings)
+    library = library or VoiceLibrary(
+        settings.library_dir or default_library_dir(),
+        max_audio_bytes=settings.max_ref_audio_bytes,
+        max_image_bytes=settings.max_image_bytes,
+    )
+    voices = VoiceService(library, engine, cache_size=settings.voice_cache_size)
     forecaster = forecaster or DurationForecaster(
         path=settings.timing_history_path,
         max_samples=settings.timing_history_size,
@@ -102,6 +107,8 @@ def create_app(
     app.state.settings = settings
     app.state.engine = engine
     app.state.forecaster = forecaster
+    app.state.library = library
+    app.state.voices = voices
 
     # -- pages -----------------------------------------------------------
     @app.get("/", include_in_schema=False)
@@ -148,6 +155,10 @@ def create_app(
             "asr_model": settings.asr_model if settings.load_asr else None,
             "voice_design": VOICE_DESIGN_CATEGORIES,
             "timing_history": forecaster.history(engine.env_key),
+            # Schlüssel der geladenen Gewichte: ändert er sich, müssen die
+            # gespeicherten Stimmen neu berechnet werden.
+            "voice_model_key": voices.model_key,
+            "library_dir": library.root,
         }
 
     @app.get("/api/languages")
@@ -215,7 +226,7 @@ def create_app(
                 if (upload.size or 0) > settings.max_ref_audio_bytes:
                     raise too_large
                 suffix = os.path.splitext(upload.filename or "")[1].lower()
-                if suffix in _ALLOWED_AUDIO_SUFFIXES:
+                if suffix in ALLOWED_AUDIO_SUFFIXES:
                     ref_suffix = suffix
                 ref_bytes = await upload.read()
                 if len(ref_bytes) > settings.max_ref_audio_bytes:
@@ -233,6 +244,16 @@ def create_app(
         mode = (_clean(data.get("mode")) or "auto").lower()
         if mode not in ("auto", "clone", "design"):
             raise HTTPException(status_code=422, detail=f"Unbekannter Modus: {mode}")
+
+        # Eine gespeicherte Person ersetzt den Upload: ihr Referenz-Audio liegt
+        # schon in der Bibliothek, und die daraus berechnete Stimme womöglich
+        # auch -- dann entfällt die Vorbereitung komplett.
+        voice = None
+        voice_id = _clean(data.get("voice_id"))
+        if voice_id:
+            voice = _voice_or_404(voice_id)
+            mode = "clone"
+            ref_bytes = None
 
         language = _clean(data.get("language"))
         if language and language.lower() in ("auto", "automatisch"):
@@ -258,6 +279,18 @@ def create_app(
             denoise=_as_bool(data.get("denoise"), True),
             normalize_text=_as_bool(data.get("normalize_text"), False),
         )
+
+        if voice is not None:
+            req.ref_text = req.ref_text or voice.ref_text or None
+            req.ref_audio_path = library.audio_path(voice.id)
+            try:
+                # Kann beim ersten Mal Sekunden bis Minuten dauern, deshalb
+                # genau wie die Synthese neben dem Event-Loop.
+                req.voice_artifact = await run_in_threadpool(voices.artifact, voice)
+            except SynthesisError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         tmp_path = None
         try:
@@ -297,6 +330,171 @@ def create_app(
                 "X-OmniVoice-Generation-Seconds": f"{elapsed:.2f}",
             },
         )
+
+    # -- Stimm-Bibliothek ------------------------------------------------
+    def _voice_or_404(voice_id: str) -> Voice:
+        try:
+            return library.get(voice_id)
+        except VoiceNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    async def _upload(form: Any, field: str, *, limit: int, label: str):
+        item = form.get(field)
+        if item is None or not hasattr(item, "read"):
+            return None
+        too_large = HTTPException(
+            status_code=413,
+            detail=f"{label} ist zu groß (max. {limit // (1024 * 1024)} MB).",
+        )
+        if (item.size or 0) > limit:
+            raise too_large
+        data = await item.read()
+        if len(data) > limit:
+            raise too_large
+        if not data:
+            return None
+        return Upload(
+            filename=item.filename or "",
+            data=data,
+            media_type=item.content_type or None,
+        )
+
+    def _library_error(exc: LibraryError) -> HTTPException:
+        return HTTPException(status_code=422, detail=str(exc))
+
+    @app.get("/api/voices")
+    def list_voices() -> dict[str, Any]:
+        entries = [voices.describe(voice) for voice in library.list()]
+        return {
+            "count": len(entries),
+            "voices": entries,
+            "model_key": voices.model_key,
+            "library_dir": library.root,
+        }
+
+    @app.post("/api/voices", status_code=201)
+    async def create_voice(request: Request) -> dict[str, Any]:
+        form = await request.form()
+        audio = await _upload(
+            form,
+            "ref_audio",
+            limit=settings.max_ref_audio_bytes,
+            label="Das Referenz-Audio",
+        )
+        if audio is None:
+            raise HTTPException(
+                status_code=422, detail="Bitte ein Referenz-Audio hochladen."
+            )
+        image = await _upload(
+            form, "image", limit=settings.max_image_bytes, label="Das Bild"
+        )
+        try:
+            voice = library.create(
+                name=_clean(form.get("name")) or "",
+                audio=audio,
+                ref_text=_clean(form.get("ref_text")) or "",
+                description=_clean(form.get("description")) or "",
+                language=_clean(form.get("language")),
+                image=image,
+            )
+        except LibraryError as exc:
+            raise _library_error(exc) from exc
+        return voices.describe(voice)
+
+    @app.post("/api/voices/prepare-all")
+    async def prepare_all_voices(force: bool = False) -> dict[str, Any]:
+        """Alle Stimmen für die aktuell geladenen Gewichte durchrechnen."""
+        results = []
+        for voice in library.list():
+            entry: dict[str, Any] = {"id": voice.id, "name": voice.name}
+            try:
+                entry.update(
+                    await run_in_threadpool(voices.prepare, voice, force=force)
+                )
+            except (SynthesisError, FileNotFoundError, OSError) as exc:
+                entry.update({"prepared": False, "error": str(exc)})
+            except Exception as exc:  # noqa: BLE001 - eine kaputte Stimme
+                logger.exception("Stimme %s konnte nicht vorbereitet werden", voice.id)
+                entry.update(
+                    {"prepared": False, "error": f"{type(exc).__name__}: {exc}"}
+                )
+            results.append(entry)
+        return {
+            "model_key": voices.model_key,
+            "count": len(results),
+            "failed": sum(1 for entry in results if not entry.get("prepared")),
+            "results": results,
+        }
+
+    @app.get("/api/voices/{voice_id}")
+    def get_voice(voice_id: str) -> dict[str, Any]:
+        return voices.describe(_voice_or_404(voice_id))
+
+    @app.post("/api/voices/{voice_id}")
+    async def update_voice(voice_id: str, request: Request) -> dict[str, Any]:
+        _voice_or_404(voice_id)
+        form = await request.form()
+        audio = await _upload(
+            form,
+            "ref_audio",
+            limit=settings.max_ref_audio_bytes,
+            label="Das Referenz-Audio",
+        )
+        image = await _upload(
+            form, "image", limit=settings.max_image_bytes, label="Das Bild"
+        )
+        fields: dict[str, Any] = {}
+        for field in ("name", "ref_text", "description", "language"):
+            if field in form:
+                fields[field] = str(form.get(field) or "")
+        try:
+            voice = library.update(
+                voice_id,
+                audio=audio,
+                image=image,
+                remove_image=_as_bool(form.get("remove_image"), False),
+                **fields,
+            )
+        except LibraryError as exc:
+            raise _library_error(exc) from exc
+        # Ein neues Referenz-Audio ergibt einen neuen Fingerabdruck; der alte
+        # Eintrag im Zwischenspeicher passt dann nicht mehr.
+        voices.forget(voice_id)
+        return voices.describe(voice)
+
+    @app.delete("/api/voices/{voice_id}")
+    def delete_voice(voice_id: str) -> dict[str, Any]:
+        _voice_or_404(voice_id)
+        voices.forget(voice_id)
+        library.delete(voice_id)
+        return {"deleted": voice_id}
+
+    @app.get("/api/voices/{voice_id}/audio")
+    def voice_audio(voice_id: str) -> FileResponse:
+        voice = _voice_or_404(voice_id)
+        path = library.audio_path(voice_id)
+        if not path:
+            raise HTTPException(status_code=404, detail="Kein Referenz-Audio.")
+        return FileResponse(path, media_type=voice.audio.media_type)
+
+    @app.get("/api/voices/{voice_id}/image")
+    def voice_image(voice_id: str) -> FileResponse:
+        voice = _voice_or_404(voice_id)
+        path = library.image_path(voice_id)
+        if not path:
+            raise HTTPException(status_code=404, detail="Kein Bild hinterlegt.")
+        return FileResponse(path, media_type=voice.image.media_type)
+
+    @app.post("/api/voices/{voice_id}/prepare")
+    async def prepare_voice(voice_id: str, force: bool = False) -> dict[str, Any]:
+        voice = _voice_or_404(voice_id)
+        try:
+            result = await run_in_threadpool(voices.prepare, voice, force=force)
+        except SynthesisError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {**voices.describe(voice), **result}
 
     return app
 

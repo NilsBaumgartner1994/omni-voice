@@ -7,3 +7,6 @@ venv/
 output/
 *.wav
 .DS_Store
+
+# Lokale Stimm-Bibliothek (Standard außerhalb von Docker)
+data/

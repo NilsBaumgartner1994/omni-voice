@@ -6,6 +6,9 @@ Repository verpackt es so, dass es **mit einem Befehl als Docker-Container auf
 dem eigenen Laptop läuft** – inklusive kleiner Weboberfläche und REST-API.
 
 * Ein Befehl zum Starten, alles läuft lokal.
+* **Stimm-Bibliothek**: Personen mit Bild, Name, Referenzaufnahme und
+  Referenztext anlegen und immer wieder verwenden – oder wie bisher ohne
+  gespeicherte Stimme erzeugen.
 * **Kein Hugging-Face-API-Key nötig** ([warum](#brauche-ich-einen-hugging-face-token)).
 * CPU-Standard (läuft auf jedem Laptop), NVIDIA-GPU per Override-Datei.
 * Dauerprognose: die Oberfläche zeigt vorab und während der Erzeugung, wie
@@ -79,17 +82,56 @@ nicht mehr ins Netz.
 
 ## Die Weboberfläche
 
-Drei Modi, wie im Original-Modell:
+Vier Modi:
 
 1. **Automatisch** – nur Text eingeben, das Modell wählt eine Stimme.
-2. **Stimme klonen** – Referenz-Audio (3–10 s) hochladen oder direkt im Browser
-   aufnehmen. Der Referenztext ist optional, siehe Hinweis unten.
-3. **Stimme entwerfen** – Stimme über Eigenschaften beschreiben (Geschlecht,
+2. **Gespeicherte Stimme** – eine Person aus der Bibliothek auswählen
+   (siehe unten).
+3. **Einmalige Referenz** – Referenz-Audio (3–10 s) hochladen oder direkt im
+   Browser aufnehmen, ohne es zu speichern. Der Referenztext ist optional,
+   siehe Hinweis unten.
+4. **Stimme entwerfen** – Stimme über Eigenschaften beschreiben (Geschlecht,
    Alter, Tonhöhe, Flüstern, englischer Akzent, chinesischer Dialekt).
 
 Unter „Erweiterte Einstellungen“ lassen sich Tempo, Diffusionsschritte,
 Guidance-Scale und eine feste Audiolänge einstellen. Steuerzeichen aus OmniVoice
 wie `[laughter]` oder `[B EY1 S]` funktionieren direkt im Text.
+
+### Die Stimm-Bibliothek
+
+Unten auf der Seite lassen sich **Personen** anlegen: Name, Bild (optional),
+Referenz-Audio und der zugehörige Referenztext. Danach steht die Person im Tab
+„Gespeicherte Stimme“ zur Auswahl – Text eintippen, erzeugen, fertig.
+
+Beim ersten Auftrag rechnet das Modell aus der Aufnahme einmal die Stimme aus
+und legt das Ergebnis neben der Person ab; jeder weitere Auftrag überspringt
+diesen Schritt. Wer nicht warten will, drückt vorher „Vorbereiten“ (oder
+„Alle für dieses Modell vorbereiten“).
+
+**Modellwechsel:** Quelldaten und Berechnetes liegen getrennt:
+
+```
+/data/voices/<person>/voice.json          Name, Referenztext, Notiz
+/data/voices/<person>/reference.wav       Referenzaufnahme
+/data/voices/<person>/portrait.jpg        Bild
+/data/voices/<person>/derived/<key>.bin   vom Modell berechnete Stimme
+```
+
+Nur der `derived/`-Teil hängt am Modell. Wird ein anderes Modell (oder eine
+andere Rechengenauigkeit) geladen, ändert sich der Schlüssel: die Oberfläche
+zeigt die Stimmen dann als „noch nicht berechnet“, und ein Klick auf
+„Alle für dieses Modell vorbereiten“ erzeugt sie neu. Personen, Bilder,
+Aufnahmen und Texte bleiben dabei unangetastet. Dasselbe passiert automatisch,
+wenn für eine Person ein neues Referenz-Audio oder ein neuer Referenztext
+hinterlegt wird.
+
+Die Bibliothek liegt in einem **eigenen Docker-Volume** (`/data`), getrennt von
+den Modellgewichten in `/models`. Wer die Daten lieber als normalen Ordner auf
+dem Rechner haben will (praktisch für Backups), setzt in der `.env`:
+
+```bash
+OMNIVOICE_DATA_PATH=./data
+```
 
 ### Wie lange dauert das noch?
 
@@ -157,6 +199,12 @@ passend zur Maschine und benutzt ansonsten exakt die Upstream-Oberfläche.
 | `GET` | `/api/languages` | Liste der unterstützten Sprachen |
 | `GET` | `/api/estimate` | Dauerprognose für die angegebenen Einstellungen |
 | `POST` | `/api/tts` | Synthese, Antwort ist eine WAV-Datei |
+| `GET` | `/api/voices` | Stimm-Bibliothek auflisten (inkl. „berechnet?“) |
+| `POST` | `/api/voices` | Person anlegen (multipart: `name`, `ref_audio`, `ref_text`, `image`, …) |
+| `GET` `POST` `DELETE` | `/api/voices/{id}` | einzelne Person lesen, ändern, löschen |
+| `GET` | `/api/voices/{id}/audio` · `/image` | hinterlegte Dateien |
+| `POST` | `/api/voices/{id}/prepare` | Stimme für das geladene Modell berechnen |
+| `POST` | `/api/voices/prepare-all` | alle Stimmen berechnen (nach Modellwechsel) |
 | `GET` | `/docs` | interaktive OpenAPI-Dokumentation |
 
 `/api/tts` akzeptiert JSON oder `multipart/form-data` (für das Referenz-Audio):
@@ -184,9 +232,28 @@ curl -X POST http://localhost:7860/api/tts \
   -o klon.wav
 ```
 
-Felder: `text` (Pflicht), `mode` (`auto` | `clone` | `design`), `language`,
-`instruct`, `ref_audio`, `ref_text`, `num_step`, `guidance_scale`, `speed`,
-`duration`, `denoise`, `normalize_text`.
+Felder: `text` (Pflicht), `mode` (`auto` | `clone` | `design`), `voice_id`,
+`language`, `instruct`, `ref_audio`, `ref_text`, `num_step`, `guidance_scale`,
+`speed`, `duration`, `denoise`, `normalize_text`.
+
+Mit einer gespeicherten Person genügt deren `voice_id` – Referenzaufnahme und
+Referenztext kommen dann aus der Bibliothek:
+
+```bash
+# Person anlegen
+curl -X POST http://localhost:7860/api/voices \
+  -F name="Anna Beispiel" \
+  -F ref_text="Transkript der Referenzaufnahme." \
+  -F ref_audio=@referenz.wav \
+  -F image=@anna.jpg
+# {"id": "anna-beispiel-a1b2c3", "prepared": false, ...}
+
+# und benutzen
+curl -X POST http://localhost:7860/api/tts \
+  -F text="Hallo, hier spricht Anna." \
+  -F voice_id=anna-beispiel-a1b2c3 \
+  -o anna.wav
+```
 
 Die Antwort trägt die tatsächliche Rechenzeit im Header
 `X-OmniVoice-Generation-Seconds` (und die Audiolänge in
@@ -219,6 +286,10 @@ Alles über Umgebungsvariablen, am einfachsten per `.env` (`cp .env.example .env
 | `OMNIVOICE_ASR_MODEL` | `openai/whisper-large-v3-turbo` | verwendetes Whisper-Modell |
 | `OMNIVOICE_MAX_TEXT_CHARS` | `2000` | Längenlimit pro Anfrage |
 | `OMNIVOICE_ENGINE` | `omnivoice` | `dummy` = Testton ohne Modell |
+| `OMNIVOICE_DATA_PATH` | Docker-Volume | Host-Ordner für die Stimm-Bibliothek, z. B. `./data` |
+| `OMNIVOICE_LIBRARY_DIR` | `/data/voices` | Verzeichnis der Stimm-Bibliothek im Container |
+| `OMNIVOICE_MAX_IMAGE_BYTES` | `5242880` | Obergrenze für hinterlegte Bilder |
+| `OMNIVOICE_VOICE_CACHE_SIZE` | `8` | berechnete Stimmen gleichzeitig im RAM |
 | `OMNIVOICE_TIMING_HISTORY` | `/models/generation-timings.json` | Datei mit den gemessenen Laufzeiten (Basis der Dauerprognose) |
 | `OMNIVOICE_TIMING_HISTORY_SIZE` | `200` | Wie viele Läufe gespeichert bleiben |
 | `OMP_NUM_THREADS` | leer | CPU-Threads begrenzen |
@@ -298,6 +369,7 @@ mehrere GB herunterzuladen.
 | „Fehler beim Laden“ + `UnsupportedProtocol: Request URL is missing an 'http://' …` | `HF_ENDPOINT` ist leer gesetzt. Zeile aus der `.env` entfernen oder auf eine vollständige URL setzen, danach `docker compose up -d` |
 | Port 7860 belegt | `OMNIVOICE_PORT=8080` in die `.env` |
 | Prognose bleibt „noch unbekannt“ | Es ist noch kein Auftrag durchgelaufen (oder Gerät/Modell wurde gewechselt – die Historie startet dann neu) |
+| Stimmen stehen plötzlich auf „noch nicht berechnet“ | Modell, dtype oder Referenzaufnahme wurde gewechselt – „Alle für dieses Modell vorbereiten“ drücken |
 | Healthcheck bleibt „starting“ | Normal, solange Gewichte geladen werden (Startphase: 30 Minuten) |
 
 ---
@@ -306,10 +378,13 @@ mehrere GB herunterzuladen.
 
 ```
 Dockerfile               CPU-Image (Build-Args für CUDA)
-docker-compose.yml       Standarddienst (CPU) + Volume für die Gewichte
+docker-compose.yml       Standarddienst (CPU) + Volumes für Gewichte und Stimmen
 docker-compose.gpu.yml   Override für NVIDIA-GPUs
 docker/entrypoint.sh     serve | gradio | prefetch | infer | shell
-omnivoice_server/        FastAPI-Server, Engine-Wrapper, Dauerprognose, Weboberfläche
+omnivoice_server/        FastAPI-Server, Weboberfläche, Dauerprognose
+  library.py             Stimm-Bibliothek (Quelldaten, kennt kein Modell)
+  engine.py              Modell-Anbindung (kennt keine Bibliothek)
+  voices.py              Brücke: berechnet und findet Stimmen je Modell
 scripts/                 Modell-Prefetch und Smoke-Test
 tests/                   Tests ohne Modellgewichte
 ```
