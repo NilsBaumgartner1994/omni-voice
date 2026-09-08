@@ -318,3 +318,138 @@ code {
   border-radius: 4px;
   padding: 0 0.25rem;
 }
+
+/* ---------------------------------------------------- Stimm-Bibliothek */
+.voice-avatar {
+  width: 48px;
+  height: 48px;
+  min-width: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.voice-avatar.placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.voice-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 0.6rem;
+}
+
+.voice-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  text-align: center;
+  padding: 0.7rem 0.5rem;
+}
+
+.voice-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.voice-card-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.voice-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.voice-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.voice-row:first-child {
+  border-top: none;
+}
+
+.voice-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.voice-row-main .hint {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.voice-row-main audio {
+  margin-top: 0.35rem;
+  max-width: 320px;
+  height: 34px;
+}
+
+.voice-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.voice-row-actions button {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+button.danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.badge {
+  align-self: flex-start;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 0.05rem 0.5rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.badge.ready {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.badge.pending {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+#voice-form button.primary {
+  width: auto;
+  margin-top: 0;
+}
+
+#voice-form .row {
+  align-items: center;
+}
+
+@media (max-width: 620px) {
+  .voice-row {
+    flex-wrap: wrap;
+  }
+
+  .voice-row-actions {
+    justify-content: flex-start;
+  }
+}

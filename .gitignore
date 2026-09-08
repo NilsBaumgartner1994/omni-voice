@@ -7,3 +7,7 @@ venv/
 output/
 *.wav
 .DS_Store
+
+# Daten auf dem Host: Stimm-Bibliothek und Modellgewichte
+data/
+models/

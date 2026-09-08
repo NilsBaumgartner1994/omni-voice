@@ -24,7 +24,12 @@
           <button class="tab active" data-mode="auto" role="tab">
             Automatisch
           </button>
-          <button class="tab" data-mode="clone" role="tab">Stimme klonen</button>
+          <button class="tab" data-mode="saved" role="tab">
+            Gespeicherte Stimme
+          </button>
+          <button class="tab" data-mode="clone" role="tab">
+            Einmalige Referenz
+          </button>
           <button class="tab" data-mode="design" role="tab">
             Stimme entwerfen
           </button>
@@ -48,6 +53,16 @@
         <select id="language">
           <option value="">Automatisch erkennen</option>
         </select>
+
+        <!-- Gespeicherte Stimmen -->
+        <fieldset id="pane-saved" class="pane" hidden>
+          <legend>Person auswählen</legend>
+          <div id="voice-picker" class="voice-picker"></div>
+          <p id="voice-picker-empty" class="hint" hidden>
+            Noch keine Stimme angelegt – weiter unten in der Bibliothek
+            anlegen.
+          </p>
+        </fieldset>
 
         <!-- Voice cloning -->
         <fieldset id="pane-clone" class="pane" hidden>
@@ -159,6 +174,66 @@
             ⬇ Herunterladen
           </a>
         </div>
+      </section>
+      <section id="library" class="card">
+        <div class="row between">
+          <h2>Stimmen-Bibliothek</h2>
+          <button id="prepare-all" type="button" class="secondary">
+            Alle für dieses Modell vorbereiten
+          </button>
+        </div>
+        <p class="hint" id="library-hint"></p>
+
+        <div id="voice-list" class="voice-list"></div>
+        <p id="voice-list-empty" class="hint" hidden>
+          Noch keine Person angelegt.
+        </p>
+
+        <details id="voice-form-box">
+          <summary id="voice-form-title">Neue Person anlegen</summary>
+          <form id="voice-form">
+            <div class="grid">
+              <div>
+                <label for="voice-name">Name</label>
+                <input id="voice-name" type="text" maxlength="80"
+                  placeholder="z. B. Anna Beispiel" required />
+              </div>
+              <div>
+                <label for="voice-language">Sprache der Aufnahme (optional)</label>
+                <select id="voice-language">
+                  <option value="">Automatisch erkennen</option>
+                </select>
+              </div>
+            </div>
+
+            <label for="voice-image">Bild (optional)</label>
+            <div class="row">
+              <img id="voice-image-preview" class="voice-avatar" alt="" hidden />
+              <input id="voice-image" type="file" accept="image/*" />
+            </div>
+
+            <label for="voice-audio">Referenz-Audio (3–10 Sekunden)</label>
+            <input id="voice-audio" type="file" accept="audio/*" />
+            <audio id="voice-audio-preview" controls hidden></audio>
+
+            <label for="voice-ref-text">Referenztext</label>
+            <textarea id="voice-ref-text" rows="2"
+              placeholder="Wortgenaues Transkript des Referenz-Audios."></textarea>
+
+            <label for="voice-description">Notiz (optional)</label>
+            <input id="voice-description" type="text" maxlength="500"
+              placeholder="z. B. Aufnahme vom 03.09., ruhiger Raum" />
+
+            <div class="row">
+              <button id="voice-save" type="submit" class="primary">Speichern</button>
+              <button id="voice-cancel" type="button" class="secondary" hidden>
+                Abbrechen
+              </button>
+            </div>
+          </form>
+        </details>
+
+        <p id="library-error" class="error" hidden></p>
       </section>
     </main>
 

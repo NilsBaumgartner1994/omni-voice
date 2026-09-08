@@ -23,6 +23,9 @@ ENV PYTHONUNBUFFERED=1 \
     # Modell-Cache liegt im Volume, damit Gewichte nur einmal geladen werden.
     HF_HOME=/models \
     TORCH_HOME=/models/torch \
+    # Stimm-Bibliothek: eigenes Volume, damit Personen und Aufnahmen einen
+    # Modellwechsel (und ein geleertes Modell-Volume) überleben.
+    OMNIVOICE_DATA_DIR=/data \
     OMNIVOICE_HOST=0.0.0.0 \
     OMNIVOICE_PORT_INTERNAL=7860
 
@@ -50,8 +53,8 @@ RUN pip install --no-cache-dir \
         "python-multipart>=0.0.9"
 
 RUN useradd --create-home --uid 1000 omnivoice \
-    && mkdir -p /models /output \
-    && chown -R omnivoice:omnivoice /models /output
+    && mkdir -p /models /output /data \
+    && chown -R omnivoice:omnivoice /models /output /data
 
 WORKDIR /app
 COPY --chown=omnivoice:omnivoice omnivoice_server/ /app/omnivoice_server/
@@ -60,7 +63,7 @@ COPY --chown=omnivoice:omnivoice docker/entrypoint.sh /usr/local/bin/entrypoint.
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 USER omnivoice
-VOLUME ["/models"]
+VOLUME ["/models", "/data"]
 EXPOSE 7860
 
 # Beim ersten Start werden mehrere GB Modellgewichte geladen; solange läuft

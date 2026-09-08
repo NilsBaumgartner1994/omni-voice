@@ -4,7 +4,10 @@ GPU_FILES = -f docker-compose.yml -f docker-compose.gpu.yml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build up up-gpu down logs restart shell prefetch gradio smoke test dev lint clean-models
+MODELS_DIR ?= $(if $(OMNIVOICE_MODELS_PATH),$(OMNIVOICE_MODELS_PATH),./models)
+DATA_DIR ?= $(if $(OMNIVOICE_DATA_PATH),$(OMNIVOICE_DATA_PATH),./data)
+
+.PHONY: help build up up-gpu down logs restart shell prefetch gradio smoke test dev lint clean-models dirs
 
 help: ## Diese Hilfe anzeigen
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -13,11 +16,14 @@ help: ## Diese Hilfe anzeigen
 build: ## Image bauen (CPU)
 	$(COMPOSE) build
 
-up: ## Container starten und auf http://localhost:7860 bereitstellen
+dirs: ## Host-Ordner fuer Gewichte und Stimmen anlegen
+	@mkdir -p "$(MODELS_DIR)" "$(DATA_DIR)"
+
+up: dirs ## Container starten und auf http://localhost:7860 bereitstellen
 	$(COMPOSE) up -d --build
 	@echo "-> http://localhost:$${OMNIVOICE_PORT:-7860}  (erster Start laedt die Modelle, siehe 'make logs')"
 
-up-gpu: ## Container mit NVIDIA-GPU starten
+up-gpu: dirs ## Container mit NVIDIA-GPU starten
 	$(COMPOSE) $(GPU_FILES) up -d --build
 
 down: ## Container stoppen (Modell-Cache bleibt erhalten)
@@ -32,13 +38,13 @@ restart: ## Container neu starten
 shell: ## Bash im Container
 	$(COMPOSE) run --rm omnivoice shell
 
-prefetch: ## Modellgewichte vorab herunterladen (kein HF-Token noetig)
+prefetch: dirs ## Modellgewichte vorab herunterladen (kein HF-Token noetig)
 	$(COMPOSE) run --rm omnivoice prefetch
 
 gradio: ## Originale Gradio-Oberflaeche starten (vorher 'make down')
 	$(COMPOSE) run --rm --service-ports omnivoice gradio
 
-smoke: ## Container ohne Modell testen (Dummy-Engine, ~1 Minute)
+smoke: dirs ## Container ohne Modell testen (Dummy-Engine, ~1 Minute)
 	OMNIVOICE_ENGINE=dummy $(COMPOSE) up -d --build
 	@bash scripts/smoke_test.sh
 	$(COMPOSE) down
@@ -49,5 +55,7 @@ test: ## Python-Tests lokal ausfuehren (ohne Docker, ohne Modell)
 dev: ## Server lokal ohne Docker starten (Dummy-Engine)
 	OMNIVOICE_ENGINE=dummy python -m omnivoice_server --port 7860
 
-clean-models: ## Modell-Cache-Volume loeschen (erzwingt Neu-Download)
-	$(COMPOSE) down -v
+clean-models: ## Heruntergeladene Modellgewichte loeschen (erzwingt Neu-Download)
+	$(COMPOSE) down
+	rm -rf "$(MODELS_DIR)"
+	@echo "Stimm-Bibliothek in $(DATA_DIR) ist unberuehrt geblieben."

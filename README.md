@@ -6,12 +6,16 @@ Repository verpackt es so, dass es **mit einem Befehl als Docker-Container auf
 dem eigenen Laptop läuft** – inklusive kleiner Weboberfläche und REST-API.
 
 * Ein Befehl zum Starten, alles läuft lokal.
+* **Stimm-Bibliothek**: Personen mit Bild, Name, Referenzaufnahme und
+  Referenztext anlegen und immer wieder verwenden – oder wie bisher ohne
+  gespeicherte Stimme erzeugen.
 * **Kein Hugging-Face-API-Key nötig** ([warum](#brauche-ich-einen-hugging-face-token)).
 * CPU-Standard (läuft auf jedem Laptop), NVIDIA-GPU per Override-Datei.
 * Dauerprognose: die Oberfläche zeigt vorab und während der Erzeugung, wie
   lange es voraussichtlich noch dauert – gelernt aus den bisherigen Läufen
   auf dem eigenen Rechner.
-* Modellgewichte liegen in einem Docker-Volume und werden nur einmal geladen.
+* Modellgewichte und Stimm-Bibliothek liegen als normale Ordner auf dem
+  Rechner (`models/` und `data/`) – sichtbar, sicherbar, nur einmal geladen.
 * Smoke-Test-Modus, mit dem sich der Container ohne Modell-Download prüfen lässt.
 
 | Hell | Dunkel |
@@ -34,6 +38,17 @@ docker compose up -d --build
 ```
 
 Danach im Browser öffnen: **<http://localhost:7860>**
+
+Dabei entstehen zwei Ordner neben dem Repository:
+
+| Ordner | Inhalt |
+| --- | --- |
+| `models/` | Modellgewichte (mehrere GB, werden einmal geladen) |
+| `data/` | Stimm-Bibliothek: Personen, Bilder, Aufnahmen, Texte |
+
+Beide gehören dem eigenen Benutzerkonto und lassen sich ganz normal sichern
+oder verschieben (andere Pfade: `OMNIVOICE_MODELS_PATH` / `OMNIVOICE_DATA_PATH`
+in der `.env`). `docker compose down` – auch mit `-v` – fasst sie nicht an.
 
 Beim **ersten** Start lädt der Container die Modellgewichte von Hugging Face
 (mehrere GB). Solange zeigt die Oberfläche „Modell wird geladen …“. Fortschritt:
@@ -79,17 +94,53 @@ nicht mehr ins Netz.
 
 ## Die Weboberfläche
 
-Drei Modi, wie im Original-Modell:
+Vier Modi:
 
 1. **Automatisch** – nur Text eingeben, das Modell wählt eine Stimme.
-2. **Stimme klonen** – Referenz-Audio (3–10 s) hochladen oder direkt im Browser
-   aufnehmen. Der Referenztext ist optional, siehe Hinweis unten.
-3. **Stimme entwerfen** – Stimme über Eigenschaften beschreiben (Geschlecht,
+2. **Gespeicherte Stimme** – eine Person aus der Bibliothek auswählen
+   (siehe unten).
+3. **Einmalige Referenz** – Referenz-Audio (3–10 s) hochladen oder direkt im
+   Browser aufnehmen, ohne es zu speichern. Der Referenztext ist optional,
+   siehe Hinweis unten.
+4. **Stimme entwerfen** – Stimme über Eigenschaften beschreiben (Geschlecht,
    Alter, Tonhöhe, Flüstern, englischer Akzent, chinesischer Dialekt).
 
 Unter „Erweiterte Einstellungen“ lassen sich Tempo, Diffusionsschritte,
 Guidance-Scale und eine feste Audiolänge einstellen. Steuerzeichen aus OmniVoice
 wie `[laughter]` oder `[B EY1 S]` funktionieren direkt im Text.
+
+### Die Stimm-Bibliothek
+
+Unten auf der Seite lassen sich **Personen** anlegen: Name, Bild (optional),
+Referenz-Audio und der zugehörige Referenztext. Danach steht die Person im Tab
+„Gespeicherte Stimme“ zur Auswahl – Text eintippen, erzeugen, fertig.
+
+Beim ersten Auftrag rechnet das Modell aus der Aufnahme einmal die Stimme aus
+und legt das Ergebnis neben der Person ab; jeder weitere Auftrag überspringt
+diesen Schritt. Wer nicht warten will, drückt vorher „Vorbereiten“ (oder
+„Alle für dieses Modell vorbereiten“).
+
+**Modellwechsel:** Quelldaten und Berechnetes liegen getrennt:
+
+```
+/data/voices/<person>/voice.json          Name, Referenztext, Notiz
+/data/voices/<person>/reference.wav       Referenzaufnahme
+/data/voices/<person>/portrait.jpg        Bild
+/data/voices/<person>/derived/<key>.bin   vom Modell berechnete Stimme
+```
+
+Nur der `derived/`-Teil hängt am Modell. Wird ein anderes Modell (oder eine
+andere Rechengenauigkeit) geladen, ändert sich der Schlüssel: die Oberfläche
+zeigt die Stimmen dann als „noch nicht berechnet“, und ein Klick auf
+„Alle für dieses Modell vorbereiten“ erzeugt sie neu. Personen, Bilder,
+Aufnahmen und Texte bleiben dabei unangetastet. Dasselbe passiert automatisch,
+wenn für eine Person ein neues Referenz-Audio oder ein neuer Referenztext
+hinterlegt wird.
+
+Die Bibliothek liegt im Ordner `data/` auf dem Rechner, getrennt von den
+Gewichten in `models/`. Ein Backup ist damit ein simples Kopieren des Ordners;
+zum Umziehen auf einen anderen Rechner reicht es, `data/` mitzunehmen und die
+Stimmen dort einmal vorbereiten zu lassen.
 
 ### Wie lange dauert das noch?
 
@@ -116,7 +167,7 @@ Programm hat die CPU blockiert) verzerrt sie also nicht.
 
 Die Historie hängt an Engine, Modell, Gerät und dtype – nach einem Wechsel von
 CPU auf GPU wird also neu gelernt statt falsch geschätzt. Sie liegt im
-Modell-Volume (`/models/generation-timings.json`) und überlebt damit einen
+Modell-Ordner (`models/generation-timings.json`) und überlebt damit einen
 Neustart des Containers.
 
 ![Stimme klonen](docs/screenshot-clone.png)
@@ -157,6 +208,12 @@ passend zur Maschine und benutzt ansonsten exakt die Upstream-Oberfläche.
 | `GET` | `/api/languages` | Liste der unterstützten Sprachen |
 | `GET` | `/api/estimate` | Dauerprognose für die angegebenen Einstellungen |
 | `POST` | `/api/tts` | Synthese, Antwort ist eine WAV-Datei |
+| `GET` | `/api/voices` | Stimm-Bibliothek auflisten (inkl. „berechnet?“) |
+| `POST` | `/api/voices` | Person anlegen (multipart: `name`, `ref_audio`, `ref_text`, `image`, …) |
+| `GET` `POST` `DELETE` | `/api/voices/{id}` | einzelne Person lesen, ändern, löschen |
+| `GET` | `/api/voices/{id}/audio` · `/image` | hinterlegte Dateien |
+| `POST` | `/api/voices/{id}/prepare` | Stimme für das geladene Modell berechnen |
+| `POST` | `/api/voices/prepare-all` | alle Stimmen berechnen (nach Modellwechsel) |
 | `GET` | `/docs` | interaktive OpenAPI-Dokumentation |
 
 `/api/tts` akzeptiert JSON oder `multipart/form-data` (für das Referenz-Audio):
@@ -184,9 +241,28 @@ curl -X POST http://localhost:7860/api/tts \
   -o klon.wav
 ```
 
-Felder: `text` (Pflicht), `mode` (`auto` | `clone` | `design`), `language`,
-`instruct`, `ref_audio`, `ref_text`, `num_step`, `guidance_scale`, `speed`,
-`duration`, `denoise`, `normalize_text`.
+Felder: `text` (Pflicht), `mode` (`auto` | `clone` | `design`), `voice_id`,
+`language`, `instruct`, `ref_audio`, `ref_text`, `num_step`, `guidance_scale`,
+`speed`, `duration`, `denoise`, `normalize_text`.
+
+Mit einer gespeicherten Person genügt deren `voice_id` – Referenzaufnahme und
+Referenztext kommen dann aus der Bibliothek:
+
+```bash
+# Person anlegen
+curl -X POST http://localhost:7860/api/voices \
+  -F name="Anna Beispiel" \
+  -F ref_text="Transkript der Referenzaufnahme." \
+  -F ref_audio=@referenz.wav \
+  -F image=@anna.jpg
+# {"id": "anna-beispiel-a1b2c3", "prepared": false, ...}
+
+# und benutzen
+curl -X POST http://localhost:7860/api/tts \
+  -F text="Hallo, hier spricht Anna." \
+  -F voice_id=anna-beispiel-a1b2c3 \
+  -o anna.wav
+```
 
 Die Antwort trägt die tatsächliche Rechenzeit im Header
 `X-OmniVoice-Generation-Seconds` (und die Audiolänge in
@@ -219,15 +295,32 @@ Alles über Umgebungsvariablen, am einfachsten per `.env` (`cp .env.example .env
 | `OMNIVOICE_ASR_MODEL` | `openai/whisper-large-v3-turbo` | verwendetes Whisper-Modell |
 | `OMNIVOICE_MAX_TEXT_CHARS` | `2000` | Längenlimit pro Anfrage |
 | `OMNIVOICE_ENGINE` | `omnivoice` | `dummy` = Testton ohne Modell |
+| `OMNIVOICE_MODELS_PATH` | `./models` | Ordner auf dem Host für die Modellgewichte |
+| `OMNIVOICE_DATA_PATH` | `./data` | Ordner auf dem Host für die Stimm-Bibliothek |
+| `OMNIVOICE_LIBRARY_DIR` | `/data/voices` | Verzeichnis der Stimm-Bibliothek im Container |
+| `OMNIVOICE_MAX_IMAGE_BYTES` | `5242880` | Obergrenze für hinterlegte Bilder |
+| `OMNIVOICE_VOICE_CACHE_SIZE` | `8` | berechnete Stimmen gleichzeitig im RAM |
 | `OMNIVOICE_TIMING_HISTORY` | `/models/generation-timings.json` | Datei mit den gemessenen Laufzeiten (Basis der Dauerprognose) |
 | `OMNIVOICE_TIMING_HISTORY_SIZE` | `200` | Wie viele Läufe gespeichert bleiben |
 | `OMP_NUM_THREADS` | leer | CPU-Threads begrenzen |
 | `HF_ENDPOINT` | leer | Spiegelserver für Hugging Face |
 | `HF_HUB_OFFLINE` | leer | `1` = keine Netzwerkzugriffe mehr |
 
-Die Modellgewichte liegen im Volume `omnivoice-models` (im Container unter
-`/models`). `docker compose down` lässt sie unangetastet;
-`docker compose down -v` bzw. `make clean-models` löscht sie.
+Modellgewichte (`models/` → `/models`) und Stimm-Bibliothek (`data/` →
+`/data`) sind Ordner auf dem Host und überleben jedes `docker compose down`,
+auch mit `-v`. `make clean-models` löscht nur die Gewichte und erzwingt damit
+einen Neu-Download; die Stimmen bleiben stehen.
+
+Wer schon vor dieser Änderung gestartet ist, hat die Gewichte noch im alten
+Docker-Volume. Statt sie neu zu laden, einmal umkopieren:
+
+```bash
+docker compose down
+mkdir -p models
+docker run --rm -v omnivoice-models:/from -v "$PWD/models":/to \
+  alpine sh -c 'cp -a /from/. /to/'
+docker compose up -d
+```
 
 ---
 
@@ -298,6 +391,9 @@ mehrere GB herunterzuladen.
 | „Fehler beim Laden“ + `UnsupportedProtocol: Request URL is missing an 'http://' …` | `HF_ENDPOINT` ist leer gesetzt. Zeile aus der `.env` entfernen oder auf eine vollständige URL setzen, danach `docker compose up -d` |
 | Port 7860 belegt | `OMNIVOICE_PORT=8080` in die `.env` |
 | Prognose bleibt „noch unbekannt“ | Es ist noch kein Auftrag durchgelaufen (oder Gerät/Modell wurde gewechselt – die Historie startet dann neu) |
+| „Permission denied“ auf `/models` oder `/data` (Linux) | Ordner gehören root. `sudo chown -R 1000:1000 models data` – der Container läuft als UID 1000 |
+| Gewichte werden erneut heruntergeladen | Sie liegen noch im alten Docker-Volume; siehe „Konfiguration“ zum Umkopieren |
+| Stimmen stehen plötzlich auf „noch nicht berechnet“ | Modell, dtype oder Referenzaufnahme wurde gewechselt – „Alle für dieses Modell vorbereiten“ drücken |
 | Healthcheck bleibt „starting“ | Normal, solange Gewichte geladen werden (Startphase: 30 Minuten) |
 
 ---
@@ -306,12 +402,17 @@ mehrere GB herunterzuladen.
 
 ```
 Dockerfile               CPU-Image (Build-Args für CUDA)
-docker-compose.yml       Standarddienst (CPU) + Volume für die Gewichte
+docker-compose.yml       Standarddienst (CPU) + Host-Ordner models/ und data/
 docker-compose.gpu.yml   Override für NVIDIA-GPUs
 docker/entrypoint.sh     serve | gradio | prefetch | infer | shell
-omnivoice_server/        FastAPI-Server, Engine-Wrapper, Dauerprognose, Weboberfläche
+omnivoice_server/        FastAPI-Server, Weboberfläche, Dauerprognose
+  library.py             Stimm-Bibliothek (Quelldaten, kennt kein Modell)
+  engine.py              Modell-Anbindung (kennt keine Bibliothek)
+  voices.py              Brücke: berechnet und findet Stimmen je Modell
 scripts/                 Modell-Prefetch und Smoke-Test
 tests/                   Tests ohne Modellgewichte
+models/                  Modellgewichte (nicht eingecheckt)
+data/voices/             Stimm-Bibliothek (nicht eingecheckt)
 ```
 
 Upstream-Code ist bewusst **nicht** eingecheckt: das Image installiert das
