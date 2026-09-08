@@ -233,32 +233,112 @@
           <div id="voice-current" hidden>
             <label for="voice-audio-current">Hinterlegte Referenzaufnahme</label>
             <audio id="voice-audio-current" controls preload="none"></audio>
+            <small id="voice-source" class="hint" hidden></small>
           </div>
 
           <form id="voice-form">
-            <div class="grid">
-              <div>
-                <label for="voice-name">Name</label>
-                <input id="voice-name" type="text" maxlength="80"
-                  placeholder="z. B. Anna Beispiel" required />
-              </div>
-              <div>
-                <label for="voice-language">Sprache der Aufnahme (optional)</label>
-                <select id="voice-language">
-                  <option value="">Automatisch erkennen</option>
-                </select>
-              </div>
+            <label for="voice-name">Name</label>
+            <div class="row name-row">
+              <input id="voice-name" type="text" maxlength="80"
+                placeholder="z. B. Anna Beispiel" required />
+              <button
+                id="voice-image-search"
+                type="button"
+                class="secondary"
+                title="Bild zu diesem Namen im Internet suchen"
+              >
+                🔍 Bild suchen
+              </button>
             </div>
+
+            <label for="voice-language">Sprache der Aufnahme (optional)</label>
+            <select id="voice-language">
+              <option value="">Automatisch erkennen</option>
+            </select>
 
             <label for="voice-image">Bild (optional)</label>
             <div class="row">
               <img id="voice-image-preview" class="voice-avatar" alt="" hidden />
               <input id="voice-image" type="file" accept="image/*" />
             </div>
+            <small id="voice-image-hint" class="hint" hidden></small>
+            <div id="image-results" class="image-results" hidden></div>
+            <p id="image-search-links" class="hint" hidden></p>
 
-            <label for="voice-audio">Referenz-Audio (3–10 Sekunden)</label>
-            <input id="voice-audio" type="file" accept="audio/*" />
-            <audio id="voice-audio-preview" controls hidden></audio>
+            <label>Referenz-Audio (3–10 Sekunden)</label>
+            <div class="tabs source-tabs" role="tablist">
+              <button type="button" class="tab active" data-source="file" role="tab">
+                Datei
+              </button>
+              <button type="button" class="tab" data-source="youtube" role="tab">
+                YouTube-Link
+              </button>
+            </div>
+
+            <div id="voice-source-file">
+              <input id="voice-audio" type="file" accept="audio/*" />
+              <audio id="voice-audio-preview" controls hidden></audio>
+            </div>
+
+            <div id="voice-source-youtube" hidden>
+              <div class="row yt-url-row">
+                <input
+                  id="yt-url"
+                  type="url"
+                  placeholder="https://www.youtube.com/watch?v=…"
+                />
+                <button id="yt-load" type="button" class="secondary">Laden</button>
+              </div>
+              <small id="yt-hint" class="hint"></small>
+
+              <div id="yt-result" hidden>
+                <div class="row yt-head">
+                  <img id="yt-thumb" class="yt-thumb" alt="" hidden />
+                  <div>
+                    <strong id="yt-title"></strong>
+                    <br />
+                    <small id="yt-meta" class="hint"></small>
+                  </div>
+                </div>
+                <audio id="yt-audio" controls preload="metadata"></audio>
+                <div class="row yt-range">
+                  <button id="yt-set-start" type="button" class="secondary">
+                    ⏱ Start hier
+                  </button>
+                  <input
+                    id="yt-start"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value="0"
+                    aria-label="Startzeit in Sekunden"
+                  />
+                  <button id="yt-set-end" type="button" class="secondary">
+                    ⏱ Ende hier
+                  </button>
+                  <input
+                    id="yt-end"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value="0"
+                    aria-label="Endzeit in Sekunden"
+                  />
+                  <button id="yt-play-range" type="button" class="secondary">
+                    ▶ Ausschnitt anhören
+                  </button>
+                </div>
+                <small id="yt-range-hint" class="hint"></small>
+
+                <div id="yt-transcript-box" hidden>
+                  <label>Transkript des Ausschnitts</label>
+                  <p id="yt-transcript" class="yt-transcript"></p>
+                  <button id="yt-use-transcript" type="button" class="secondary">
+                    Als Referenztext übernehmen
+                  </button>
+                </div>
+              </div>
+            </div>
 
             <label for="voice-ref-text">Referenztext</label>
             <textarea id="voice-ref-text" rows="2"

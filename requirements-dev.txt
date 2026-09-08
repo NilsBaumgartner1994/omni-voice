@@ -3,6 +3,8 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 python-multipart>=0.0.9
+# Nur fuer Referenzaufnahmen aus YouTube-Links (braucht zusaetzlich ffmpeg).
+yt-dlp>=2025.1.15
 httpx>=0.27
 pytest>=8.0
 ruff>=0.6

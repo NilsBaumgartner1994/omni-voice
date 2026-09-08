@@ -493,3 +493,129 @@ button.danger {
   flex: 1 1 12rem;
   margin-top: 0;
 }
+
+/* ------------------------------------ Quelle der Referenzaufnahme (Datei
+   oder YouTube-Link) und die Bildersuche zum Namen. */
+.source-tabs {
+  margin-top: 0.4rem;
+}
+
+.source-tabs .tab {
+  padding: 0.35rem 0.8rem;
+  font-size: 0.9rem;
+}
+
+/* Name und Lupe in einer Zeile: das Eingabefeld nimmt den Rest. */
+.name-row {
+  margin-top: 0;
+  gap: 0.4rem;
+  flex-wrap: nowrap;
+}
+
+.name-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.name-row button {
+  white-space: nowrap;
+  padding: 0.55rem 0.7rem;
+}
+
+#voice-source-youtube {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.yt-url-row {
+  margin-top: 0;
+  gap: 0.4rem;
+  flex-wrap: nowrap;
+}
+
+.yt-url-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.yt-head {
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.yt-thumb {
+  width: 120px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+/* Zeitmarken: Knöpfe zum Setzen, dazwischen die Sekunden zum Nachbessern. */
+.yt-range {
+  gap: 0.4rem;
+}
+
+.yt-range input {
+  width: 6rem;
+  flex: 0 0 auto;
+}
+
+.yt-range button {
+  padding: 0.45rem 0.7rem;
+  font-size: 0.9rem;
+}
+
+.yt-transcript {
+  margin: 0.4rem 0 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 0.9rem;
+  max-height: 8rem;
+  overflow-y: auto;
+}
+
+.image-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.image-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem;
+  font-size: 0.75rem;
+  text-align: center;
+  overflow: hidden;
+}
+
+.image-hit img {
+  width: 100%;
+  height: 84px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.image-hit span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--muted);
+}
+
+.image-hit.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+#image-search-links a {
+  color: var(--accent);
+}

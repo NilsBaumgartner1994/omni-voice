@@ -24,8 +24,9 @@ from .audio import (
     normalize_format,
     wav_to_mp3,
 )
-from .config import Settings, default_library_dir
+from .config import Settings, default_library_dir, default_youtube_cache_dir
 from .engine import BaseEngine, SynthesisError, SynthesisRequest, build_engine
+from .imagesearch import ImageSearch, ImageSearchError, browser_search_urls
 from .library import (
     ALLOWED_AUDIO_SUFFIXES,
     LibraryError,
@@ -37,6 +38,14 @@ from .library import (
 from .timing import DurationForecaster, RequestFeatures
 from .voice_design import VOICE_DESIGN_CATEGORIES
 from .voices import VoiceService
+from .youtube import (
+    YouTubeError,
+    YouTubeService,
+    YouTubeUnavailable,
+    transcript_between,
+    video_id_from_url,
+    watch_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +102,8 @@ def create_app(
     load_on_startup: bool = True,
     forecaster: DurationForecaster | None = None,
     library: VoiceLibrary | None = None,
+    youtube: YouTubeService | None = None,
+    images: ImageSearch | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     engine = engine or build_engine(settings)
@@ -100,6 +111,21 @@ def create_app(
         settings.library_dir or default_library_dir(),
         max_audio_bytes=settings.max_ref_audio_bytes,
         max_image_bytes=settings.max_image_bytes,
+    )
+    youtube = youtube or YouTubeService(
+        settings.youtube_cache_dir or default_youtube_cache_dir(),
+        max_video_seconds=settings.youtube_max_video_seconds,
+        max_clip_seconds=settings.youtube_max_clip_seconds,
+        cache_entries=settings.youtube_cache_entries,
+        timeout_seconds=settings.youtube_timeout_seconds,
+        binary=settings.ytdlp_binary,
+        mp3_bitrate=settings.mp3_bitrate,
+        enabled=settings.youtube_enabled,
+    )
+    images = images or ImageSearch(
+        enabled=settings.image_search_enabled,
+        language=settings.image_search_language,
+        max_bytes=settings.max_image_bytes,
     )
     voices = VoiceService(library, engine, cache_size=settings.voice_cache_size)
     forecaster = forecaster or DurationForecaster(
@@ -133,6 +159,8 @@ def create_app(
     app.state.forecaster = forecaster
     app.state.library = library
     app.state.voices = voices
+    app.state.youtube = youtube
+    app.state.images = images
 
     # -- pages -----------------------------------------------------------
     @app.get("/", include_in_schema=False)
@@ -187,6 +215,10 @@ def create_app(
             # gespeicherten Stimmen neu berechnet werden.
             "voice_model_key": voices.model_key,
             "library_dir": library.root,
+            # Kann dieser Server eine Referenzaufnahme aus einem YouTube-Video
+            # holen, und darf er Bilder zum Namen suchen?
+            "youtube": youtube.availability(),
+            "image_search": images.availability(),
         }
 
     @app.get("/api/languages")
@@ -422,6 +454,112 @@ def create_app(
             },
         )
 
+    # -- Referenz aus einem YouTube-Video --------------------------------
+    async def _body(request: Request) -> dict[str, Any]:
+        """JSON oder Formular -- die Oberfläche schickt Formulare, curl JSON."""
+        if request.headers.get("content-type", "").startswith("application/json"):
+            data = await request.json()
+            return data if isinstance(data, dict) else {}
+        return {k: v for k, v in (await request.form()).items()}
+
+    def _youtube_error(exc: YouTubeError) -> HTTPException:
+        # Fehlt yt-dlp, liegt es am Server (503) -- sonst am Link (422).
+        code = 503 if isinstance(exc, YouTubeUnavailable) else 422
+        return HTTPException(status_code=code, detail=str(exc))
+
+    @app.post("/api/youtube/fetch")
+    async def youtube_fetch(request: Request) -> dict[str, Any]:
+        """Tonspur und Untertitel eines Videos holen (und zwischenspeichern).
+
+        Antwortet mit Stammdaten, dem Transkript samt Zeitmarken und der
+        Adresse, unter der die Tonspur zum Anhören bereitliegt -- damit lassen
+        sich Start und Ende wählen, bevor irgendetwas gespeichert wird.
+        """
+        data = await _body(request)
+        url = _clean(data.get("url"))
+        if not url:
+            raise HTTPException(status_code=422, detail="Bitte einen Link angeben.")
+        try:
+            video = await run_in_threadpool(
+                youtube.fetch, url, refresh=_as_bool(data.get("refresh"), False)
+            )
+        except YouTubeError as exc:
+            raise _youtube_error(exc) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Der Zwischenspeicher streikt: {exc}"
+            ) from exc
+        payload = video.as_dict()
+        payload["audio_url"] = f"/api/youtube/{video.id}/audio"
+        payload["max_clip_seconds"] = youtube.max_clip_seconds
+        return payload
+
+    @app.get("/api/youtube/{video_id}/audio")
+    def youtube_audio(video_id: str) -> FileResponse:
+        """Die geladene Tonspur -- Grundlage für Anhören und Zuschneiden."""
+        try:
+            path = youtube.audio_path(video_id)
+        except YouTubeError as exc:
+            raise _youtube_error(exc) from exc
+        if not path:
+            raise HTTPException(
+                status_code=404,
+                detail="Dieses Video liegt nicht (mehr) bereit. Bitte den Link "
+                "noch einmal laden.",
+            )
+        return FileResponse(path, media_type="audio/mpeg")
+
+    @app.get("/api/youtube/{video_id}/transcript")
+    def youtube_transcript(
+        video_id: str, start: float = 0.0, end: float = 0.0
+    ) -> dict[str, Any]:
+        """Das Transkript des gewählten Ausschnitts."""
+        try:
+            video = youtube.cached(video_id)
+        except YouTubeError as exc:
+            raise _youtube_error(exc) from exc
+        if video is None:
+            raise HTTPException(
+                status_code=404, detail="Dieses Video liegt nicht (mehr) bereit."
+            )
+        span_end = end if end > start else video.duration
+        return {
+            "id": video.id,
+            "start": round(start, 2),
+            "end": round(span_end, 2),
+            "kind": video.transcript_kind,
+            "language": video.transcript_language,
+            "text": transcript_between(video.transcript, start, span_end),
+        }
+
+    # -- Bild zum Namen suchen -------------------------------------------
+    @app.get("/api/image-search")
+    async def image_search(q: str = "", limit: int = 8) -> dict[str, Any]:
+        """Portraits zu einem Namen -- Wikipedia und Wikimedia Commons.
+
+        Geliefert werden nur Vorschläge; heruntergeladen wird erst das eine
+        Bild, das beim Speichern der Person als ``image_url`` mitkommt.
+        """
+        query = _clean(q) or ""
+        if not query:
+            raise HTTPException(
+                status_code=422, detail="Bitte einen Namen zum Suchen angeben."
+            )
+        state = images.availability()
+        if not state["enabled"]:
+            raise HTTPException(status_code=503, detail=state["reason"])
+        try:
+            hits = await run_in_threadpool(images.search, query, limit)
+        except ImageSearchError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {
+            "query": query,
+            "count": len(hits),
+            "results": [hit.as_dict() for hit in hits],
+            # Findet Wikipedia nichts, hilft die Suche im Browser weiter.
+            "browser_search": browser_search_urls(query),
+        }
+
     # -- Stimm-Bibliothek ------------------------------------------------
     def _voice_or_404(voice_id: str) -> Voice:
         try:
@@ -452,6 +590,74 @@ def create_app(
 
     def _library_error(exc: LibraryError) -> HTTPException:
         return HTTPException(status_code=422, detail=str(exc))
+
+    async def _youtube_reference(
+        form: Any,
+    ) -> tuple[Upload | None, dict[str, Any] | None, str]:
+        """Aus Link und Zeitmarken die Referenzaufnahme schneiden.
+
+        Zurück kommen die MP3-Daten, die Herkunftsangabe für ``voice.json``
+        und das Transkript des Ausschnitts (leer, wenn das Video keins hat).
+        """
+        url = _clean(form.get("youtube_url"))
+        video_id = _clean(form.get("youtube_video_id"))
+        if not url and not video_id:
+            return None, None, ""
+        start = _as_float(form.get("youtube_start"), 0.0)
+        end = _as_float(form.get("youtube_end"), 0.0)
+        if end <= start:
+            raise HTTPException(
+                status_code=422,
+                detail="Bitte Start- und Endzeit des Ausschnitts angeben.",
+            )
+        try:
+            if not video_id:
+                video_id = video_id_from_url(url or "")
+            data = await run_in_threadpool(youtube.clip, video_id, start, end, url=url)
+            video = youtube.cached(video_id)
+        except YouTubeError as exc:
+            raise _youtube_error(exc) from exc
+        except AudioEncodeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        source = {
+            "kind": "youtube",
+            "url": url or watch_url(video_id),
+            "video_id": video_id,
+            "start": round(start, 2),
+            "end": round(end, 2),
+            "title": video.title if video else "",
+            "uploader": video.uploader if video else "",
+        }
+        transcript = ""
+        if video and video.transcript:
+            transcript = transcript_between(video.transcript, start, end)
+            source["transcript_kind"] = video.transcript_kind
+        return (
+            Upload(filename="reference.mp3", data=data, media_type="audio/mpeg"),
+            source,
+            transcript,
+        )
+
+    async def _image_from_search(form: Any) -> Upload | None:
+        """Ein in der Bildersuche ausgewähltes Bild holen."""
+        url = _clean(form.get("image_url"))
+        if not url:
+            return None
+        state = images.availability()
+        if not state["enabled"]:
+            raise HTTPException(status_code=503, detail=state["reason"])
+        try:
+            data, filename, media_type = await run_in_threadpool(images.download, url)
+        except ImageSearchError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if len(data) > settings.max_image_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail="Das Bild ist zu groß (max. "
+                f"{settings.max_image_bytes // (1024 * 1024)} MB).",
+            )
+        return Upload(filename=filename, data=data, media_type=media_type)
 
     async def _prepare_quietly(voice: Voice, *, force: bool = False) -> dict[str, Any]:
         """Stimme berechnen, ohne dass ein Fehler den Aufruf umwirft.
@@ -488,21 +694,32 @@ def create_app(
             limit=settings.max_ref_audio_bytes,
             label="Das Referenz-Audio",
         )
+        # Ohne hochgeladene Datei darf ein YouTube-Ausschnitt einspringen.
+        source = None
+        transcript = ""
+        if audio is None:
+            audio, source, transcript = await _youtube_reference(form)
         if audio is None:
             raise HTTPException(
-                status_code=422, detail="Bitte ein Referenz-Audio hochladen."
+                status_code=422,
+                detail="Bitte ein Referenz-Audio hochladen oder einen "
+                "YouTube-Link mit Start- und Endzeit angeben.",
             )
         image = await _upload(
             form, "image", limit=settings.max_image_bytes, label="Das Bild"
         )
+        if image is None:
+            image = await _image_from_search(form)
         try:
             voice = library.create(
                 name=_clean(form.get("name")) or "",
                 audio=audio,
-                ref_text=_clean(form.get("ref_text")) or "",
+                # Ohne eigenen Referenztext übernimmt das Video-Transkript.
+                ref_text=_clean(form.get("ref_text")) or transcript,
                 description=_clean(form.get("description")) or "",
                 language=_clean(form.get("language")),
                 image=image,
+                source=source,
             )
         except LibraryError as exc:
             raise _library_error(exc) from exc
@@ -543,19 +760,28 @@ def create_app(
             limit=settings.max_ref_audio_bytes,
             label="Das Referenz-Audio",
         )
+        source = None
+        transcript = ""
+        if audio is None:
+            audio, source, transcript = await _youtube_reference(form)
         image = await _upload(
             form, "image", limit=settings.max_image_bytes, label="Das Bild"
         )
+        if image is None:
+            image = await _image_from_search(form)
         fields: dict[str, Any] = {}
         for field in ("name", "ref_text", "description", "language"):
             if field in form:
                 fields[field] = str(form.get(field) or "")
+        if transcript and not _clean(fields.get("ref_text")):
+            fields["ref_text"] = transcript
         try:
             voice = library.update(
                 voice_id,
                 audio=audio,
                 image=image,
                 remove_image=_as_bool(form.get("remove_image"), False),
+                source=source,
                 **fields,
             )
         except LibraryError as exc:

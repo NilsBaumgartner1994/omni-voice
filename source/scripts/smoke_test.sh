@@ -20,7 +20,24 @@ done
 echo "OK: /api/health"
 
 curl -fsS "${BASE_URL}/" >/dev/null && echo "OK: Weboberfläche"
-curl -fsS "${BASE_URL}/api/info" >/dev/null && echo "OK: /api/info"
+curl -fsS "${BASE_URL}/api/info" -o "${OUT}.info.json" && echo "OK: /api/info"
+
+# Im Image steckt yt-dlp (YouTube-Links) und ffmpeg (MP3) -- fehlt eines,
+# fällt die Referenz aus einem Video still weg. Hier soll es auffallen.
+python3 - "${OUT}.info.json" <<'PY'
+import json, sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+youtube = data.get("youtube") or {}
+reason = youtube.get("reason") or ""
+if youtube.get("enabled"):
+    print("OK: YouTube-Quelle bereit (yt-dlp + ffmpeg)")
+elif "abgeschaltet" in reason.lower():
+    print(f"HINWEIS: YouTube-Quelle per Konfiguration aus ({reason})")
+else:
+    raise SystemExit(f"FEHLER: YouTube-Quelle nicht nutzbar: {reason}")
+PY
 
 curl -fsS -X POST "${BASE_URL}/api/tts" \
   -H 'content-type: application/json' \

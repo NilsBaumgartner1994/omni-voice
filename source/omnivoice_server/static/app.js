@@ -12,6 +12,16 @@ const state = {
   recorder: null,
   recordedBlob: null,
   info: null,
+  // Personen-Dialog: woher die Referenzaufnahme kommt ("file" oder
+  // "youtube"), das geladene Video und das in der Suche gewählte Bild.
+  voiceSource: "file",
+  video: null,
+  // Läuft der Ausschnitt gerade? Dann hält dieser Handler ihn am Ende an.
+  rangeWatcher: null,
+  // Steht im Referenztext das Transkript (dann darf es mitwandern) oder
+  // etwas Selbstgeschriebenes (dann bleibt es stehen)?
+  transcriptTaken: false,
+  imageUrl: null,
   // Letztes Ergebnis: das erzeugte WAV plus die daraus schon gebauten
   // Download-Dateien je Format ({ mp3: "blob:…" }).
   result: null,
@@ -91,6 +101,7 @@ async function loadInfo() {
     $("library-hint").textContent =
       "Personen, Bilder, Aufnahmen und Texte bleiben beim Modellwechsel " +
       `erhalten. Berechnet wird jeweils für: ${info.voice_model_key}`;
+    applySourceSupport(info);
   } catch (err) {
     /* info is cosmetic – ignore */
   }
@@ -521,9 +532,24 @@ async function submitVoiceForm(event) {
     libraryError("Bitte einen Namen angeben.");
     return;
   }
-  const audio = $("voice-audio").files[0];
-  if (!state.editing && !audio) {
-    libraryError("Bitte ein Referenz-Audio auswählen.");
+  // Die Referenzaufnahme kommt entweder als Datei oder als Ausschnitt eines
+  // YouTube-Videos; beim Bearbeiten darf beides leer bleiben.
+  const audio = state.voiceSource === "file" ? $("voice-audio").files[0] : null;
+  const clip = state.voiceSource === "youtube" && state.video ? currentRange() : null;
+  if (clip && clip.end <= clip.start) {
+    libraryError("Bitte Start- und Endzeit des Ausschnitts wählen.");
+    return;
+  }
+  if (clip && clip.end - clip.start > maxClipSeconds()) {
+    libraryError(`Der Ausschnitt darf höchstens ${maxClipSeconds()} Sekunden lang sein.`);
+    return;
+  }
+  if (!state.editing && !audio && !clip) {
+    libraryError(
+      state.voiceSource === "youtube"
+        ? "Bitte zuerst den YouTube-Link laden und einen Ausschnitt wählen."
+        : "Bitte ein Referenz-Audio auswählen.",
+    );
     return;
   }
 
@@ -533,8 +559,16 @@ async function submitVoiceForm(event) {
   form.set("description", $("voice-description").value.trim());
   form.set("language", $("voice-language").value);
   if (audio) form.set("ref_audio", audio, audio.name);
+  if (clip) {
+    form.set("youtube_video_id", state.video.id);
+    form.set("youtube_url", state.video.url);
+    form.set("youtube_start", clip.start.toFixed(2));
+    form.set("youtube_end", clip.end.toFixed(2));
+  }
   const image = $("voice-image").files[0];
   if (image) form.set("image", image, image.name);
+  // Ein in der Suche gewähltes Bild holt der Server selbst.
+  else if (state.imageUrl) form.set("image_url", state.imageUrl);
 
   // Neu angelegte Personen werden gleich vorbereitet – sonst wartet der erste
   // Auftrag darauf. Beim Bearbeiten macht das die Bibliothek nicht ungefragt.
@@ -546,7 +580,7 @@ async function submitVoiceForm(event) {
     url,
     { method: "POST", body: form },
     $("voice-save"),
-    prepare ? "Speichere & bereite vor …" : "Speichere …",
+    clip ? "Schneide & speichere …" : prepare ? "Speichere & bereite vor …" : "Speichere …",
   );
   if (!saved) return;
   closeVoiceDialog();
@@ -576,7 +610,31 @@ function openVoice(id) {
   const current = $("voice-audio-current");
   $("voice-current").hidden = !voice.has_audio;
   if (voice.has_audio) current.src = `/api/voices/${id}/audio?v=${voice.revision}`;
+  renderVoiceOrigin(voice.source);
   openVoiceDialog();
+}
+
+// Woher die hinterlegte Aufnahme stammt (steht nur bei YouTube-Quellen in
+// voice.json) – als Link zurück auf die Stelle im Video.
+function renderVoiceOrigin(source) {
+  const node = $("voice-source");
+  node.innerHTML = "";
+  if (!source || source.kind !== "youtube") {
+    node.hidden = true;
+    return;
+  }
+  node.hidden = false;
+  node.append(
+    `Quelle: ${source.title || "YouTube"} · ` +
+      `${clockSeconds(source.start)} – ${clockSeconds(source.end)} · `,
+  );
+  const link = document.createElement("a");
+  const start = Math.floor(Number(source.start) || 0);
+  link.href = `${source.url}${source.url.includes("?") ? "&" : "?"}t=${start}`;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  link.textContent = "im Video ansehen";
+  node.appendChild(link);
 }
 
 function newVoice() {
@@ -636,6 +694,12 @@ function resetVoiceForm() {
   $("voice-image-preview").hidden = true;
   $("voice-audio-preview").hidden = true;
   $("voice-current").hidden = true;
+  $("voice-source").hidden = true;
+  $("image-results").hidden = true;
+  $("image-search-links").hidden = true;
+  clearImageChoice();
+  resetYoutube();
+  setVoiceSource("file");
   libraryError("");
   renderDialogState();
 }
@@ -675,6 +739,321 @@ async function prepareAllVoices(node) {
       `${result.failed} von ${result.count} Stimmen konnten nicht berechnet ` +
         `werden: ${failed.map((entry) => `${entry.name} (${entry.error})`).join(", ")}`,
     );
+  }
+}
+
+// ------------------------------------------ Referenz aus einem YouTube-Video
+// Der Server sagt, ob er yt-dlp und ffmpeg hat und wie lang ein Ausschnitt
+// höchstens sein darf; fehlt etwas, steht der Grund gleich im Formular.
+function applySourceSupport(info) {
+  const youtube = info.youtube || {};
+  $("yt-url").disabled = !youtube.enabled;
+  $("yt-load").disabled = !youtube.enabled;
+  $("yt-hint").textContent = youtube.enabled
+    ? "Link einfügen, laden, dann Start und Ende wählen – auch während der " +
+      `Wiedergabe. Ausschnitt: höchstens ${maxClipSeconds()} Sekunden.`
+    : `YouTube-Links gehen hier nicht: ${youtube.reason || "nicht verfügbar"}`;
+  const search = info.image_search || {};
+  $("voice-image-search").title = search.enabled
+    ? "Bild zu diesem Namen im Internet suchen"
+    : `Bildersuche: ${search.reason || "nicht verfügbar"} – es bleiben die ` +
+      "Links zu den Suchmaschinen.";
+}
+
+function maxClipSeconds() {
+  const youtube = (state.info && state.info.youtube) || {};
+  return Number(youtube.max_clip_seconds) || 120;
+}
+
+// Sekunden als "1:23,4" – im Formular selbst stehen weiterhin Sekunden,
+// damit sich der Ausschnitt notfalls von Hand genau eintippen lässt.
+function clockSeconds(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(value / 60);
+  const rest = (value % 60).toFixed(1).padStart(4, "0");
+  return `${minutes}:${rest.replace(".", ",")}`;
+}
+
+function setVoiceSource(kind) {
+  state.voiceSource = kind;
+  for (const tab of document.querySelectorAll("[data-source]")) {
+    tab.classList.toggle("active", tab.dataset.source === kind);
+  }
+  $("voice-source-file").hidden = kind !== "file";
+  $("voice-source-youtube").hidden = kind !== "youtube";
+  if (kind !== "youtube") stopRange();
+}
+
+function currentRange() {
+  const duration = (state.video && state.video.duration) || 0;
+  let start = Math.max(0, Number($("yt-start").value) || 0);
+  let end = Math.max(0, Number($("yt-end").value) || 0);
+  if (duration) {
+    start = Math.min(start, duration);
+    end = Math.min(end, duration);
+  }
+  return { start, end, duration };
+}
+
+// Das Transkript des Videos ist nach Zeitmarken sortiert; für den Ausschnitt
+// zählt jeder Abschnitt, der hineinragt.
+function transcriptForRange(start, end) {
+  const segments = (state.video && state.video.transcript) || [];
+  if (end <= start) return "";
+  return segments
+    .filter((segment) => segment.end > start && segment.start < end)
+    .map((segment) => segment.text)
+    .join(" ")
+    .trim();
+}
+
+function renderRange() {
+  if (!state.video) return;
+  const { start, end, duration } = currentRange();
+  const length = end - start;
+  const limit = maxClipSeconds();
+  const parts = [
+    `Ausschnitt ${clockSeconds(start)} – ${clockSeconds(end)}`,
+    `${length.toFixed(1)} s von ${clockSeconds(duration)}`,
+  ];
+  if (length <= 0) {
+    parts.push("⚠ Das Ende muss hinter dem Start liegen.");
+  } else if (length > limit) {
+    parts.push(`⚠ Höchstens ${limit} Sekunden.`);
+  } else if (length < 2) {
+    parts.push("⚠ Sehr kurz – 3 bis 10 Sekunden klingen am besten.");
+  }
+  $("yt-range-hint").textContent = parts.join(" · ");
+
+  const transcript = transcriptForRange(start, end);
+  const box = $("yt-transcript-box");
+  const hasSegments = ((state.video.transcript || []).length || 0) > 0;
+  box.hidden = false;
+  $("yt-transcript").textContent = hasSegments
+    ? transcript || "(für diesen Bereich steht nichts im Transkript)"
+    : "Zu diesem Video gibt es keine Untertitel – bitte den Referenztext " +
+      "selbst eintragen.";
+  $("yt-use-transcript").hidden = !transcript;
+  // Solange der Referenztext aus dem Transkript stammt, wandert er mit;
+  // sobald jemand selbst tippt, bleibt das Getippte stehen.
+  const refText = $("voice-ref-text");
+  if (transcript && (state.transcriptTaken || !refText.value.trim())) {
+    refText.value = transcript;
+    state.transcriptTaken = true;
+  }
+}
+
+function useTranscript() {
+  const { start, end } = currentRange();
+  const transcript = transcriptForRange(start, end);
+  if (!transcript) return;
+  $("voice-ref-text").value = transcript;
+  state.transcriptTaken = true;
+}
+
+async function loadYoutube(node) {
+  const url = $("yt-url").value.trim();
+  if (!url) {
+    libraryError("Bitte einen YouTube-Link einfügen.");
+    return;
+  }
+  $("yt-hint").textContent =
+    "Tonspur und Untertitel werden geladen – bei langen Videos dauert das " +
+    "einen Moment.";
+  const data = await voiceRequest(
+    "/api/youtube/fetch",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    },
+    node,
+    "Lade …",
+  );
+  if (!data) {
+    $("yt-hint").textContent = "";
+    return;
+  }
+  state.video = data;
+  $("yt-result").hidden = false;
+  $("yt-title").textContent = data.title || data.id;
+  const bits = [data.uploader, `Länge ${clockSeconds(data.duration)}`];
+  bits.push(
+    (data.transcript || []).length
+      ? `Transkript vorhanden (${data.transcript_kind === "auto" ? "automatisch" : "vom Kanal"}${
+          data.transcript_language ? `, ${data.transcript_language}` : ""
+        })`
+      : "kein Transkript verfügbar",
+  );
+  $("yt-meta").textContent = bits.filter(Boolean).join(" · ");
+  const thumb = $("yt-thumb");
+  thumb.hidden = !data.thumbnail;
+  if (data.thumbnail) thumb.src = data.thumbnail;
+  $("yt-audio").src = data.audio_url;
+  // Voreinstellung: die ersten Sekunden – von dort aus wird gesucht.
+  $("yt-start").value = "0";
+  $("yt-end").value = String(
+    Math.min(10, maxClipSeconds(), Math.max(1, data.duration || 10)),
+  );
+  $("yt-hint").textContent =
+    "Beim Abspielen mit „Start hier“ und „Ende hier“ den Ausschnitt setzen.";
+  renderRange();
+}
+
+// Start/Ende aus der laufenden Wiedergabe übernehmen.
+function markStart() {
+  const audio = $("yt-audio");
+  const { end } = currentRange();
+  const start = Math.max(0, audio.currentTime || 0);
+  $("yt-start").value = start.toFixed(1);
+  if (end <= start) {
+    const duration = (state.video && state.video.duration) || start + 10;
+    $("yt-end").value = Math.min(start + 10, maxClipSeconds() + start, duration)
+      .toFixed(1);
+  }
+  renderRange();
+}
+
+function markEnd() {
+  const audio = $("yt-audio");
+  $("yt-end").value = Math.max(0, audio.currentTime || 0).toFixed(1);
+  renderRange();
+}
+
+function stopRange() {
+  if (!state.rangeWatcher) return;
+  $("yt-audio").removeEventListener("timeupdate", state.rangeWatcher);
+  state.rangeWatcher = null;
+}
+
+// Den gewählten Bereich anhören: an der Endmarke hält die Wiedergabe an.
+function playRange() {
+  const audio = $("yt-audio");
+  const { start, end } = currentRange();
+  if (end <= start) {
+    libraryError("Bitte erst Start und Ende setzen.");
+    return;
+  }
+  stopRange();
+  audio.currentTime = start;
+  const watcher = () => {
+    if (audio.currentTime >= end) {
+      audio.pause();
+      stopRange();
+    }
+  };
+  audio.addEventListener("timeupdate", watcher);
+  state.rangeWatcher = watcher;
+  audio.play().catch(() => {});
+}
+
+function resetYoutube() {
+  stopRange();
+  state.video = null;
+  state.transcriptTaken = false;
+  $("yt-result").hidden = true;
+  $("yt-audio").removeAttribute("src");
+  $("yt-thumb").hidden = true;
+  $("yt-range-hint").textContent = "";
+  $("yt-transcript").textContent = "";
+  $("yt-transcript-box").hidden = true;
+  if (state.info) applySourceSupport(state.info);
+}
+
+// ------------------------------------------------------------ Bildersuche
+function browserSearchLinks(query) {
+  const escaped = encodeURIComponent(query);
+  return [
+    { label: "DuckDuckGo", url: `https://duckduckgo.com/?q=${escaped}&iax=images&ia=images` },
+    { label: "Google", url: `https://www.google.com/search?q=${escaped}&tbm=isch` },
+    { label: "Bing", url: `https://www.bing.com/images/search?q=${escaped}` },
+  ];
+}
+
+async function searchImages(node) {
+  const name = $("voice-name").value.trim();
+  if (!name) {
+    libraryError("Bitte zuerst den Namen eintragen – danach wird gesucht.");
+    return;
+  }
+  renderSearchLinks(browserSearchLinks(name));
+  const data = await voiceRequest(
+    `/api/image-search?q=${encodeURIComponent(name)}`,
+    {},
+    node,
+    "Suche …",
+  );
+  if (!data) return;
+  renderImageResults(data);
+}
+
+function renderSearchLinks(links) {
+  const box = $("image-search-links");
+  box.innerHTML = "";
+  box.hidden = false;
+  box.append("Nichts Passendes dabei? Weitersuchen bei ");
+  links.forEach((entry, index) => {
+    const link = document.createElement("a");
+    link.href = entry.url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = entry.label;
+    box.appendChild(link);
+    if (index < links.length - 1) box.append(" · ");
+  });
+  box.append(" – das gefundene Bild dann als Datei auswählen.");
+}
+
+function renderImageResults(data) {
+  const box = $("image-results");
+  box.innerHTML = "";
+  const results = data.results || [];
+  box.hidden = false;
+  if (!results.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = `Zu „${data.query}“ wurde nichts gefunden.`;
+    box.appendChild(empty);
+  }
+  for (const hit of results) {
+    const tile = document.createElement("button");
+    tile.type = "button";
+    tile.className = "image-hit";
+    tile.title = [hit.title, hit.credit].filter(Boolean).join(" – ");
+    const image = document.createElement("img");
+    image.src = hit.thumbnail || hit.url;
+    image.alt = hit.title || "";
+    image.loading = "lazy";
+    const caption = document.createElement("span");
+    caption.textContent = hit.title || "";
+    tile.append(image, caption);
+    tile.addEventListener("click", () => pickImage(hit, tile));
+    box.appendChild(tile);
+  }
+  renderSearchLinks(data.browser_search || browserSearchLinks(data.query || ""));
+}
+
+// Ausgewählt wird nur der Link; heruntergeladen wird das Bild erst beim
+// Speichern der Person (der Server prüft dabei Herkunft und Größe).
+function pickImage(hit, tile) {
+  state.imageUrl = hit.url;
+  $("voice-image").value = "";
+  const preview = $("voice-image-preview");
+  preview.hidden = false;
+  preview.src = hit.thumbnail || hit.url;
+  for (const other of document.querySelectorAll(".image-hit")) {
+    other.classList.toggle("selected", other === tile);
+  }
+  const hint = $("voice-image-hint");
+  hint.hidden = false;
+  hint.textContent = `Übernommen: ${[hit.title, hit.credit].filter(Boolean).join(" – ")}`;
+}
+
+function clearImageChoice() {
+  state.imageUrl = null;
+  $("voice-image-hint").hidden = true;
+  for (const tile of document.querySelectorAll(".image-hit")) {
+    tile.classList.remove("selected");
   }
 }
 
@@ -838,6 +1217,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const preview = $("voice-image-preview");
     preview.hidden = !file;
     if (file) preview.src = URL.createObjectURL(file);
+    // Eine eigene Datei sticht das gefundene Bild aus.
+    if (file) clearImageChoice();
   });
   $("voice-audio").addEventListener("change", (event) => {
     const file = event.target.files[0];
@@ -845,6 +1226,29 @@ document.addEventListener("DOMContentLoaded", () => {
     preview.hidden = !file;
     if (file) preview.src = URL.createObjectURL(file);
   });
+  for (const tab of document.querySelectorAll("[data-source]")) {
+    tab.addEventListener("click", () => setVoiceSource(tab.dataset.source));
+  }
+  $("yt-load").addEventListener("click", (event) => loadYoutube(event.currentTarget));
+  $("yt-url").addEventListener("keydown", (event) => {
+    // Enter im Link-Feld lädt das Video, statt das Formular abzuschicken.
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    loadYoutube($("yt-load"));
+  });
+  $("yt-set-start").addEventListener("click", markStart);
+  $("yt-set-end").addEventListener("click", markEnd);
+  $("yt-play-range").addEventListener("click", playRange);
+  $("yt-use-transcript").addEventListener("click", useTranscript);
+  $("yt-start").addEventListener("input", renderRange);
+  $("yt-end").addEventListener("input", renderRange);
+  // Von Hand geschriebener Referenztext bleibt stehen.
+  $("voice-ref-text").addEventListener("input", () => {
+    state.transcriptTaken = false;
+  });
+  $("voice-image-search").addEventListener("click", (event) =>
+    searchImages(event.currentTarget),
+  );
   $("generate").disabled = true;
   setMode("auto");
   pollHealth();

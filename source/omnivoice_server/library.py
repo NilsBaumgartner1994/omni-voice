@@ -143,6 +143,9 @@ class Voice:
     language: str | None = None
     audio: Asset | None = None
     image: Asset | None = None
+    # Woher die Referenzaufnahme stammt (z. B. YouTube-Link mit Zeitmarken).
+    # Reine Herkunftsangabe: die Stimme hängt nicht daran.
+    source: dict[str, Any] | None = None
     created_at: str = ""
     updated_at: str = ""
     revision: int = 1
@@ -166,6 +169,7 @@ class Voice:
             "language": self.language,
             "audio": self.audio.as_dict() if self.audio else None,
             "image": self.image.as_dict() if self.image else None,
+            "source": self.source or None,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "revision": self.revision,
@@ -184,6 +188,7 @@ class Voice:
             language=data.get("language") or None,
             audio=Asset.from_dict(audio) if audio else None,
             image=Asset.from_dict(image) if image else None,
+            source=data.get("source") if isinstance(data.get("source"), dict) else None,
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
             revision=int(data.get("revision") or 1),
@@ -266,6 +271,7 @@ class VoiceLibrary:
         description: str = "",
         language: str | None = None,
         image: Upload | None = None,
+        source: dict[str, Any] | None = None,
     ) -> Voice:
         clean_name = _check_text(name, MAX_NAME_CHARS, "Der Name")
         if not clean_name:
@@ -288,6 +294,7 @@ class VoiceLibrary:
                         ref_text, MAX_REF_TEXT_CHARS, "Der Referenztext"
                     ),
                     language=(language or "").strip() or None,
+                    source=source or None,
                     created_at=_now(),
                     updated_at=_now(),
                 )
@@ -311,6 +318,7 @@ class VoiceLibrary:
         audio: Upload | None = None,
         image: Upload | None = None,
         remove_image: bool = False,
+        source: dict[str, Any] | None = None,
     ) -> Voice:
         with self._lock:
             voice = self.get(voice_id)
@@ -334,6 +342,11 @@ class VoiceLibrary:
             if audio is not None:
                 self._remove_asset(folder, voice.audio)
                 voice.audio = self._store_asset(folder, audio, kind="audio")
+                # Die Herkunft gehört zur Aufnahme: neue Aufnahme, neue (oder
+                # gar keine) Quelle.
+                voice.source = source or None
+            elif source is not None:
+                voice.source = source
             if remove_image:
                 self._remove_asset(folder, voice.image)
                 voice.image = None

@@ -34,8 +34,8 @@ def _env_str(name: str, default: str | None) -> str | None:
     return raw.strip()
 
 
-def default_library_dir() -> str:
-    """Wo die Stimm-Bibliothek liegt.
+def default_data_dir() -> str:
+    """Ordner für alles, was ein Mensch eingibt oder holen lässt.
 
     Bewusst *nicht* im Modell-Volume: Personen, Bilder und Referenzaufnahmen
     sollen einen Modellwechsel unbeschadet überstehen. Im Container ist das
@@ -44,7 +44,21 @@ def default_library_dir() -> str:
     base = _env_str("OMNIVOICE_DATA_DIR", None)
     if not base:
         base = "/data" if os.path.isdir("/data") else os.path.join(os.getcwd(), "data")
-    return os.path.join(base, "voices")
+    return base
+
+
+def default_library_dir() -> str:
+    """Wo die Stimm-Bibliothek liegt."""
+    return os.path.join(default_data_dir(), "voices")
+
+
+def default_youtube_cache_dir() -> str:
+    """Wo heruntergeladene YouTube-Tonspuren zwischenliegen.
+
+    Neben der Bibliothek, aber klar getrennt: der Inhalt ist jederzeit
+    wegwerfbar und wird bei Bedarf neu geholt.
+    """
+    return os.path.join(default_data_dir(), "youtube-cache")
 
 
 def _default_timing_history_path() -> str:
@@ -90,6 +104,23 @@ class Settings:
     # Wie viele berechnete Stimmen gleichzeitig im Arbeitsspeicher bleiben.
     voice_cache_size: int = 8
 
+    # Referenzaufnahmen aus einem YouTube-Video holen (braucht yt-dlp und
+    # ffmpeg im Image). Der Zwischenspeicher hält die geladenen Tonspuren,
+    # solange Start- und Endzeit gewählt werden.
+    youtube_enabled: bool = True
+    ytdlp_binary: str | None = None
+    youtube_cache_dir: str = ""
+    youtube_cache_entries: int = 5
+    # Obergrenzen: ein ganzer Kinofilm muss nicht geladen werden, und als
+    # Referenz reichen wenige Sekunden.
+    youtube_max_video_seconds: int = 3600
+    youtube_max_clip_seconds: int = 120
+    youtube_timeout_seconds: int = 600
+
+    # Bildersuche zum Namen (Wikipedia/Wikimedia Commons, ohne Schlüssel).
+    image_search_enabled: bool = True
+    image_search_language: str = "de"
+
     # Number of concurrent generations. The model is not thread safe, and a
     # laptop has no spare compute anyway, so keep this at 1.
     max_concurrency: int = 1
@@ -119,6 +150,21 @@ class Settings:
             max_convert_bytes=_env_int("OMNIVOICE_MAX_CONVERT_BYTES", 64 * 1024 * 1024),
             library_dir=_env_str("OMNIVOICE_LIBRARY_DIR", default_library_dir()),
             voice_cache_size=_env_int("OMNIVOICE_VOICE_CACHE_SIZE", 8),
+            youtube_enabled=_env_bool("OMNIVOICE_YOUTUBE", True),
+            ytdlp_binary=_env_str("OMNIVOICE_YTDLP", None),
+            youtube_cache_dir=_env_str(
+                "OMNIVOICE_YOUTUBE_CACHE_DIR", default_youtube_cache_dir()
+            ),
+            youtube_cache_entries=_env_int("OMNIVOICE_YOUTUBE_CACHE_ENTRIES", 5),
+            youtube_max_video_seconds=_env_int(
+                "OMNIVOICE_YOUTUBE_MAX_VIDEO_SECONDS", 3600
+            ),
+            youtube_max_clip_seconds=_env_int(
+                "OMNIVOICE_YOUTUBE_MAX_CLIP_SECONDS", 120
+            ),
+            youtube_timeout_seconds=_env_int("OMNIVOICE_YOUTUBE_TIMEOUT", 600),
+            image_search_enabled=_env_bool("OMNIVOICE_IMAGE_SEARCH", True),
+            image_search_language=_env_str("OMNIVOICE_IMAGE_SEARCH_LANGUAGE", "de"),
             timing_history_path=_env_str(
                 "OMNIVOICE_TIMING_HISTORY", _default_timing_history_path()
             ),

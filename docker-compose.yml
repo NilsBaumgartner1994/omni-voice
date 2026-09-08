@@ -30,6 +30,14 @@ services:
       OMNIVOICE_MP3_BITRATE: ${OMNIVOICE_MP3_BITRATE:-192k}
       # Wo die Personen/Stimmen liegen (im Container-Pfad des Daten-Volumes).
       OMNIVOICE_LIBRARY_DIR: ${OMNIVOICE_LIBRARY_DIR:-/data/voices}
+      # Referenzaufnahme aus einem YouTube-Link schneiden (yt-dlp ist im Image).
+      OMNIVOICE_YOUTUBE: ${OMNIVOICE_YOUTUBE:-true}
+      OMNIVOICE_YOUTUBE_CACHE_DIR: ${OMNIVOICE_YOUTUBE_CACHE_DIR:-/data/youtube-cache}
+      OMNIVOICE_YOUTUBE_MAX_VIDEO_SECONDS: ${OMNIVOICE_YOUTUBE_MAX_VIDEO_SECONDS:-3600}
+      OMNIVOICE_YOUTUBE_MAX_CLIP_SECONDS: ${OMNIVOICE_YOUTUBE_MAX_CLIP_SECONDS:-120}
+      # Bildersuche zum Namen (Wikipedia/Wikimedia Commons, ohne Schlüssel).
+      OMNIVOICE_IMAGE_SEARCH: ${OMNIVOICE_IMAGE_SEARCH:-true}
+      OMNIVOICE_IMAGE_SEARCH_LANGUAGE: ${OMNIVOICE_IMAGE_SEARCH_LANGUAGE:-de}
       # Optionaler Hugging-Face-Spiegel, falls huggingface.co blockiert ist.
       # Achtung: hier muss ein echter Standardwert stehen. Ein leerer Wert wird
       # von Compose als gesetztes HF_ENDPOINT="" in den Container gereicht und

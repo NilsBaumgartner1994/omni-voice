@@ -46,11 +46,16 @@ RUN pip install --no-cache-dir \
         --index-url "${TORCH_INDEX_URL}" \
         --extra-index-url https://pypi.org/simple
 
+# yt-dlp holt die Tonspur eines YouTube-Videos (samt Untertiteln), wenn eine
+# Person statt einer Datei über einen Link angelegt wird. Es ändert sich oft,
+# weil YouTube sich ändert: `docker compose build --pull --no-cache` zieht
+# eine neuere Fassung nach.
 RUN pip install --no-cache-dir \
         "omnivoice==${OMNIVOICE_VERSION}" \
         "fastapi>=0.110" \
         "uvicorn[standard]>=0.27" \
-        "python-multipart>=0.0.9"
+        "python-multipart>=0.0.9" \
+        "yt-dlp>=2025.1.15"
 
 RUN useradd --create-home --uid 1000 omnivoice \
     && mkdir -p /models /output /data \
