@@ -39,12 +39,12 @@ docker compose up -d --build
 
 Danach im Browser öffnen: **<http://localhost:7860>**
 
-Dabei entstehen zwei Ordner neben dem Repository:
+Dabei werden zwei Ordner im Repository gefüllt:
 
 | Ordner | Inhalt |
 | --- | --- |
 | `models/` | Modellgewichte (mehrere GB, werden einmal geladen) |
-| `data/` | Stimm-Bibliothek: Personen, Bilder, Aufnahmen, Texte |
+| `data/voices/` | Stimm-Bibliothek: Personen, Bilder, Aufnahmen, Texte |
 
 Beide gehören dem eigenen Benutzerkonto und lassen sich ganz normal sichern
 oder verschieben (andere Pfade: `OMNIVOICE_MODELS_PATH` / `OMNIVOICE_DATA_PATH`
@@ -283,7 +283,8 @@ Solange noch kein Auftrag gelaufen ist, ist `estimate_seconds` `null`.
 
 ## Konfiguration
 
-Alles über Umgebungsvariablen, am einfachsten per `.env` (`cp .env.example .env`):
+Alles über Umgebungsvariablen. Die `.env` im Projektordner ist bereits mit
+den Standardwerten eingecheckt – dort anpassen, danach `docker compose up -d`:
 
 | Variable | Standard | Bedeutung |
 | --- | --- | --- |
@@ -295,8 +296,8 @@ Alles über Umgebungsvariablen, am einfachsten per `.env` (`cp .env.example .env
 | `OMNIVOICE_ASR_MODEL` | `openai/whisper-large-v3-turbo` | verwendetes Whisper-Modell |
 | `OMNIVOICE_MAX_TEXT_CHARS` | `2000` | Längenlimit pro Anfrage |
 | `OMNIVOICE_ENGINE` | `omnivoice` | `dummy` = Testton ohne Modell |
-| `OMNIVOICE_MODELS_PATH` | `./models` | Ordner auf dem Host für die Modellgewichte |
-| `OMNIVOICE_DATA_PATH` | `./data` | Ordner auf dem Host für die Stimm-Bibliothek |
+| `OMNIVOICE_MODELS_PATH` | `./models` | Ordner für die Modellgewichte |
+| `OMNIVOICE_DATA_PATH` | `./data` | Ordner für die Stimm-Bibliothek |
 | `OMNIVOICE_LIBRARY_DIR` | `/data/voices` | Verzeichnis der Stimm-Bibliothek im Container |
 | `OMNIVOICE_MAX_IMAGE_BYTES` | `5242880` | Obergrenze für hinterlegte Bilder |
 | `OMNIVOICE_VOICE_CACHE_SIZE` | `8` | berechnete Stimmen gleichzeitig im RAM |
@@ -307,7 +308,7 @@ Alles über Umgebungsvariablen, am einfachsten per `.env` (`cp .env.example .env
 | `HF_HUB_OFFLINE` | leer | `1` = keine Netzwerkzugriffe mehr |
 
 Modellgewichte (`models/` → `/models`) und Stimm-Bibliothek (`data/` →
-`/data`) sind Ordner auf dem Host und überleben jedes `docker compose down`,
+`/data`) sind normale Ordner im Projekt und überleben jedes `docker compose down`,
 auch mit `-v`. `make clean-models` löscht nur die Gewichte und erzwingt damit
 einen Neu-Download; die Stimmen bleiben stehen.
 
@@ -360,7 +361,8 @@ des Modells mit Exit-Code 137 (OOM) beendet.
 
 ```bash
 pip install -r requirements-dev.txt
-OMNIVOICE_ENGINE=dummy python -m omnivoice_server --port 7860   # nur UI/API
+OMNIVOICE_ENGINE=dummy PYTHONPATH=source \
+  python -m omnivoice_server --port 7860        # nur UI/API
 ```
 
 Mit echtem Modell zusätzlich `pip install omnivoice torch torchaudio` und
@@ -401,18 +403,23 @@ mehrere GB herunterzuladen.
 ## Aufbau des Repositories
 
 ```
-Dockerfile               CPU-Image (Build-Args für CUDA)
-docker-compose.yml       Standarddienst (CPU) + Host-Ordner models/ und data/
-docker-compose.gpu.yml   Override für NVIDIA-GPUs
-docker/entrypoint.sh     serve | gradio | prefetch | infer | shell
-omnivoice_server/        FastAPI-Server, Weboberfläche, Dauerprognose
-  library.py             Stimm-Bibliothek (Quelldaten, kennt kein Modell)
-  engine.py              Modell-Anbindung (kennt keine Bibliothek)
-  voices.py              Brücke: berechnet und findet Stimmen je Modell
-scripts/                 Modell-Prefetch und Smoke-Test
-tests/                   Tests ohne Modellgewichte
-models/                  Modellgewichte (nicht eingecheckt)
-data/voices/             Stimm-Bibliothek (nicht eingecheckt)
+docker-compose.yml         Standarddienst (CPU), baut aus source/
+docker-compose.gpu.yml     Override für NVIDIA-GPUs
+.env                       Standardwerte, hier wird konfiguriert
+Makefile                   Kurzbefehle (make help)
+
+source/                    Alles, was den Server ausmacht (Build-Context)
+  Dockerfile               CPU-Image (Build-Args für CUDA)
+  docker/entrypoint.sh     serve | gradio | prefetch | infer | shell
+  omnivoice_server/        FastAPI-Server, Weboberfläche, Dauerprognose
+    library.py             Stimm-Bibliothek (Quelldaten, kennt kein Modell)
+    engine.py              Modell-Anbindung (kennt keine Bibliothek)
+    voices.py              Brücke: berechnet und findet Stimmen je Modell
+  scripts/                 Modell-Prefetch und Smoke-Test
+  tests/                   Tests ohne Modellgewichte
+
+models/                    Modellgewichte (Inhalt nicht eingecheckt)
+data/voices/               Stimm-Bibliothek (Inhalt nicht eingecheckt)
 ```
 
 Upstream-Code ist bewusst **nicht** eingecheckt: das Image installiert das

@@ -7,7 +7,10 @@
 services:
   omnivoice:
     build:
-      context: .
+      # Alles zum Bauen des Servers liegt in source/ (Dockerfile, Anwendung,
+      # Skripte, Entrypoint). Das Repository-Wurzelverzeichnis bleibt frei fuer
+      # Konfiguration (.env) und die Host-Ordner models/ und data/.
+      context: ./source
       args:
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
         OMNIVOICE_VERSION: ${OMNIVOICE_VERSION:-0.2.1}
