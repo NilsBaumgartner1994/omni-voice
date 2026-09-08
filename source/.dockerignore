@@ -1,0 +1,6 @@
+# Build-Context ist dieser Ordner (source/), siehe docker-compose.yml.
+__pycache__
+*.pyc
+.pytest_cache
+tests
+*.wav

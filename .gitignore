@@ -3,11 +3,19 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
-.env
 output/
 *.wav
 .DS_Store
 
-# Daten auf dem Host: Stimm-Bibliothek und Modellgewichte
-data/
-models/
+# Die .env mit den Standardwerten ist eingecheckt; eigene Kopien daneben nicht.
+.env.local
+.env.*.local
+
+# Daten auf dem Host: Stimm-Bibliothek und Modellgewichte bleiben lokal,
+# nur die leeren Ordner sind eingecheckt.
+/data/*
+!/data/voices/
+/data/voices/*
+!/data/voices/.gitkeep
+/models/*
+!/models/.gitkeep

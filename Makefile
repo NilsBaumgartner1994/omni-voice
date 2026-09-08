@@ -46,16 +46,17 @@ gradio: ## Originale Gradio-Oberflaeche starten (vorher 'make down')
 
 smoke: dirs ## Container ohne Modell testen (Dummy-Engine, ~1 Minute)
 	OMNIVOICE_ENGINE=dummy $(COMPOSE) up -d --build
-	@bash scripts/smoke_test.sh
+	@bash source/scripts/smoke_test.sh
 	$(COMPOSE) down
 
 test: ## Python-Tests lokal ausfuehren (ohne Docker, ohne Modell)
-	python -m pytest tests -q
+	python -m pytest -q
 
 dev: ## Server lokal ohne Docker starten (Dummy-Engine)
-	OMNIVOICE_ENGINE=dummy python -m omnivoice_server --port 7860
+	OMNIVOICE_ENGINE=dummy PYTHONPATH=source python -m omnivoice_server --port 7860
 
 clean-models: ## Heruntergeladene Modellgewichte loeschen (erzwingt Neu-Download)
 	$(COMPOSE) down
-	rm -rf "$(MODELS_DIR)"
+	@# Inhalt loeschen, den Ordner (samt .gitkeep) aber stehen lassen.
+	find "$(MODELS_DIR)" -mindepth 1 -maxdepth 1 -not -name .gitkeep -exec rm -rf {} +
 	@echo "Stimm-Bibliothek in $(DATA_DIR) ist unberuehrt geblieben."

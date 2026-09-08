@@ -2,10 +2,19 @@
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+# Der eigene Code liegt in source/ -- ohne diesen Hinweis haelt ruff
+# `omnivoice_server` beim Sortieren der Importe fuer ein Fremdpaket.
+src = ["source"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["omnivoice_server"]
+
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["source/tests"]
+# Der Server liegt in source/, damit findet pytest `omnivoice_server` auch
+# ohne Installation.
+pythonpath = ["source"]
 addopts = "-q"
