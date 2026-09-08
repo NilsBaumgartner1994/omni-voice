@@ -126,6 +126,63 @@ def wav_to_mp3(payload: bytes, *, bitrate: str = "192k") -> bytes:
     return _encode_mp3(frames, rate, bitrate=bitrate, channels=channels)
 
 
+def clip_to_mp3(
+    path: str, *, start: float, seconds: float, bitrate: str = "192k"
+) -> bytes:
+    """Einen Ausschnitt einer vorhandenen Audiodatei als MP3 herausschneiden.
+
+    Gebraucht wird das für Referenzaufnahmen aus einem längeren Mitschnitt
+    (etwa der Tonspur eines YouTube-Videos): ffmpeg dekodiert nur den
+    gewünschten Bereich und kodiert ihn einkanalig neu.
+    """
+    if seconds <= 0:
+        raise AudioEncodeError("Der Ausschnitt hat keine Länge.")
+    if not _BITRATE_RE.match(bitrate or ""):
+        raise AudioEncodeError(f"Ungültige MP3-Bitrate: {bitrate!r}")
+    binary = ffmpeg_binary()
+    if binary is None:
+        raise AudioEncodeError(
+            "Zum Schneiden wird ffmpeg gebraucht, das hier nicht gefunden wurde."
+        )
+    command = [
+        binary,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        # -ss vor -i: ffmpeg springt, statt alles davor zu dekodieren.
+        "-ss",
+        f"{max(0.0, float(start)):.3f}",
+        "-t",
+        f"{float(seconds):.3f}",
+        "-i",
+        path,
+        "-vn",
+        "-ac",
+        "1",
+        "-f",
+        "mp3",
+        "-b:a",
+        bitrate,
+        "pipe:1",
+    ]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, timeout=FFMPEG_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AudioEncodeError("ffmpeg hat zu lange gebraucht.") from exc
+    except OSError as exc:
+        raise AudioEncodeError(f"ffmpeg ließ sich nicht starten: {exc}") from exc
+    if result.returncode != 0 or not result.stdout:
+        detail = result.stderr.decode("utf-8", "replace").strip().splitlines()
+        reason = detail[-1] if detail else f"Rückgabewert {result.returncode}"
+        raise AudioEncodeError(
+            f"ffmpeg konnte den Ausschnitt nicht schneiden: {reason}"
+        )
+    return result.stdout
+
+
 def _encode_mp3(
     pcm: bytes, sampling_rate: int, *, bitrate: str, channels: int = 1
 ) -> bytes:

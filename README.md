@@ -9,6 +9,10 @@ dem eigenen Laptop läuft** – inklusive kleiner Weboberfläche und REST-API.
 * **Stimm-Bibliothek**: Personen mit Bild, Name, Referenzaufnahme und
   Referenztext anlegen und immer wieder verwenden – oder wie bisher ohne
   gespeicherte Stimme erzeugen.
+* **Referenz aus einem YouTube-Link**: Video laden, beim Anhören Start und
+  Ende setzen – der Ausschnitt wird als MP3 hinterlegt, das Transkript des
+  Videos landet im Referenztext. Dazu ein Knopf, der ein Bild zur Person im
+  Internet sucht.
 * **Kein Hugging-Face-API-Key nötig** ([warum](#brauche-ich-einen-hugging-face-token)).
 * CPU-Standard (läuft auf jedem Laptop), NVIDIA-GPU per Override-Datei.
 * Dauerprognose: die Oberfläche zeigt vorab und während der Erzeugung, wie
@@ -132,6 +136,37 @@ Ring fehlt die Berechnung noch.
 Person im Tab „Gespeicherte Stimme“ zur Auswahl – Text eintippen, erzeugen,
 fertig.
 
+**Referenzaufnahme aus einem YouTube-Video.** Statt eine Datei hochzuladen,
+lässt sich unter „Referenz-Audio“ auf „YouTube-Link“ umschalten:
+
+1. Link einfügen und auf „Laden“ klicken. Der Server holt die Tonspur des
+   Videos als MP3 und – wenn es welche gibt – die Untertitel dazu. Beides
+   liegt in `data/youtube-cache/` und wird nur zum Auswählen gebraucht.
+2. Das Video im Player anhören und mit „⏱ Start hier“ und „⏱ Ende hier“ den
+   Ausschnitt setzen – das geht **während der Wiedergabe**; die Sekunden
+   lassen sich daneben von Hand nachbessern. „▶ Ausschnitt anhören“ spielt
+   genau den gewählten Bereich und hält am Ende an.
+3. Das Transkript des Ausschnitts steht darunter und wandert automatisch in
+   den Referenztext (solange dort nichts Eigenes steht); „Als Referenztext
+   übernehmen“ setzt es von Hand. Hat das Video keine Untertitel, bleibt das
+   Feld leer: dann wird der Text selbst eingetippt – oder, mit
+   `OMNIVOICE_LOAD_ASR=true`, beim Vorbereiten von Whisper erkannt.
+
+Gespeichert wird beim Klick auf „Speichern“ nur der Ausschnitt: der Server
+schneidet ihn mit ffmpeg aus der geladenen Tonspur und legt ihn als
+`reference.mp3` bei der Person ab. Woher er stammt (Link, Titel, Start und
+Ende), steht in ihrer `voice.json` und in den Details als Link zurück auf die
+Stelle im Video. Standardgrenzen: Video höchstens 60 Minuten, Ausschnitt
+höchstens 120 Sekunden (`OMNIVOICE_YOUTUBE_MAX_*`).
+
+**Bild suchen.** Neben dem Namensfeld sucht „🔍 Bild suchen“ ein Bild zur
+Person bei Wikipedia und Wikimedia Commons – ohne Zugangsschlüssel, mit
+Angabe von Herkunft und Lizenz unter jedem Treffer. Ein Klick wählt ein Bild
+aus; heruntergeladen wird es erst beim Speichern (und nur von
+`upload.wikimedia.org`). Ist nichts Passendes dabei, führen die Links
+darunter in die Bildersuche von DuckDuckGo, Google und Bing – von dort wird
+das Bild wie gewohnt als Datei ausgewählt.
+
 Ein **Klick auf eine Person** öffnet ihre Details: Referenzaufnahme anhören,
 Name, Bild, Aufnahme, Referenztext und Notiz ändern – und die Knöpfe
 „Verwenden“, „Vorbereiten“ bzw. „Neu berechnen“ und „Löschen“.
@@ -146,10 +181,11 @@ trotzdem gespeichert, und die Stimme entsteht beim ersten Auftrag oder per
 **Modellwechsel:** Quelldaten und Berechnetes liegen getrennt:
 
 ```
-/data/voices/<person>/voice.json          Name, Referenztext, Notiz
-/data/voices/<person>/reference.wav       Referenzaufnahme
+/data/voices/<person>/voice.json          Name, Referenztext, Notiz, Herkunft
+/data/voices/<person>/reference.wav       Referenzaufnahme (aus YouTube: .mp3)
 /data/voices/<person>/portrait.jpg        Bild
 /data/voices/<person>/derived/<key>.bin   vom Modell berechnete Stimme
+/data/youtube-cache/<video-id>/           geladene Tonspur, jederzeit löschbar
 ```
 
 Nur der `derived/`-Teil hängt am Modell. Wird ein anderes Modell (oder eine
@@ -309,6 +345,43 @@ curl -X POST http://localhost:7860/api/tts \
   -o anna.wav
 ```
 
+Die Referenzaufnahme darf auch aus einem YouTube-Video kommen. Erst das Video
+laden (Tonspur + Untertitel), dann die Person mit Zeitmarken anlegen:
+
+```bash
+# Video holen: Antwort enthält Länge, Transkript mit Zeitmarken und die
+# Adresse der Tonspur zum Anhören (/api/youtube/<id>/audio).
+curl -X POST http://localhost:7860/api/youtube/fetch \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://www.youtube.com/watch?v=..."}'
+
+# Transkript eines Ausschnitts nachschlagen
+curl 'http://localhost:7860/api/youtube/<video-id>/transcript?start=12&end=22'
+
+# Person daraus anlegen: der Server schneidet 12–22 s als MP3 heraus und
+# übernimmt das Transkript als Referenztext, wenn keiner mitgeschickt wird.
+curl -X POST http://localhost:7860/api/voices \
+  -F name="Anna Beispiel" \
+  -F youtube_url="https://www.youtube.com/watch?v=..." \
+  -F youtube_start=12 \
+  -F youtube_end=22
+```
+
+Ein Bild zum Namen findet `/api/image-search`; übernommen wird es beim
+Anlegen oder Bearbeiten über `image_url` (nur Treffer der Suche):
+
+```bash
+curl 'http://localhost:7860/api/image-search?q=Anna%20Beispiel'
+# {"count": 3, "results": [{"title": "...", "url": "https://upload.wikimedia.org/...",
+#   "thumbnail": "...", "credit": "Wikimedia Commons · ... · CC BY-SA 4.0"}], ...}
+
+curl -X POST http://localhost:7860/api/voices/anna-beispiel-a1b2c3 \
+  -F image_url="https://upload.wikimedia.org/..."
+```
+
+Ob dieser Server beides kann, steht in `/api/info` unter `youtube` und
+`image_search` (jeweils mit `enabled` und – falls nicht – dem Grund).
+
 Die Antwort trägt die tatsächliche Rechenzeit im Header
 `X-OmniVoice-Generation-Seconds` (und die Audiolänge in
 `X-OmniVoice-Duration-Seconds`).
@@ -348,6 +421,15 @@ den Standardwerten eingecheckt – dort anpassen, danach `docker compose up -d`:
 | `OMNIVOICE_LIBRARY_DIR` | `/data/voices` | Verzeichnis der Stimm-Bibliothek im Container |
 | `OMNIVOICE_MAX_IMAGE_BYTES` | `5242880` | Obergrenze für hinterlegte Bilder |
 | `OMNIVOICE_VOICE_CACHE_SIZE` | `8` | berechnete Stimmen gleichzeitig im RAM |
+| `OMNIVOICE_YOUTUBE` | `true` | Referenzaufnahme aus einem YouTube-Link erlauben |
+| `OMNIVOICE_YOUTUBE_CACHE_DIR` | `/data/youtube-cache` | Zwischenspeicher der geladenen Tonspuren |
+| `OMNIVOICE_YOUTUBE_CACHE_ENTRIES` | `5` | wie viele Videos dort liegen bleiben |
+| `OMNIVOICE_YOUTUBE_MAX_VIDEO_SECONDS` | `3600` | Längengrenze für ein verlinktes Video |
+| `OMNIVOICE_YOUTUBE_MAX_CLIP_SECONDS` | `120` | Längengrenze für den Ausschnitt |
+| `OMNIVOICE_YOUTUBE_TIMEOUT` | `600` | Abbruch, wenn yt-dlp so lange braucht |
+| `OMNIVOICE_YTDLP` | leer | anderer Pfad zu `yt-dlp` |
+| `OMNIVOICE_IMAGE_SEARCH` | `true` | Bildersuche zum Namen (Wikipedia/Commons) |
+| `OMNIVOICE_IMAGE_SEARCH_LANGUAGE` | `de` | Sprachausgabe der Wikipedia-Suche |
 | `OMNIVOICE_TIMING_HISTORY` | `/models/generation-timings.json` | Datei mit den gemessenen Laufzeiten (Basis der Dauerprognose) |
 | `OMNIVOICE_TIMING_HISTORY_SIZE` | `200` | Wie viele Läufe gespeichert bleiben |
 | `OMP_NUM_THREADS` | leer | CPU-Threads begrenzen |
@@ -486,6 +568,8 @@ source/                    Alles, was den Server ausmacht (Build-Context)
   docker/entrypoint.sh     serve | gradio | prefetch | infer | shell
   omnivoice_server/        FastAPI-Server, Weboberfläche, Dauerprognose
     audio.py               Ausgabeformate: WAV (stdlib) und MP3 (ffmpeg)
+    youtube.py             Referenzaufnahme aus einem YouTube-Video (yt-dlp)
+    imagesearch.py         Bild zum Namen (Wikipedia/Wikimedia Commons)
     library.py             Stimm-Bibliothek (Quelldaten, kennt kein Modell)
     engine.py              Modell-Anbindung (kennt keine Bibliothek)
     voices.py              Brücke: berechnet und findet Stimmen je Modell
@@ -496,6 +580,7 @@ source/                    Alles, was den Server ausmacht (Build-Context)
 
 models/                    Modellgewichte (Inhalt nicht eingecheckt)
 data/voices/               Stimm-Bibliothek (Inhalt nicht eingecheckt)
+data/youtube-cache/        geladene YouTube-Tonspuren (jederzeit löschbar)
 ```
 
 Upstream-Code ist bewusst **nicht** eingecheckt: das Image installiert das
@@ -513,3 +598,9 @@ ebenfalls unter Apache 2.0.
 Stimmklonen darf nur mit Einwilligung der betroffenen Person eingesetzt werden.
 Der Upstream-Disclaimer gilt unverändert: keine unautorisierte Imitation,
 kein Betrug, keine illegalen oder unethischen Anwendungen.
+
+Das gilt besonders für Referenzaufnahmen aus fremden Videos: Ob ein Mitschnitt
+heruntergeladen und weiterverwendet werden darf, richtet sich nach dem
+Urheberrecht, den Persönlichkeitsrechten der sprechenden Person und den
+Nutzungsbedingungen der Plattform. Diese Funktion ist für eigene Aufnahmen und
+für Material gedacht, für das die Erlaubnis vorliegt.
