@@ -57,7 +57,7 @@
         <!-- Gespeicherte Stimmen -->
         <fieldset id="pane-saved" class="pane" hidden>
           <legend>Person auswählen</legend>
-          <div id="voice-picker" class="voice-picker"></div>
+          <div id="voice-picker" class="voice-grid"></div>
           <p id="voice-picker-empty" class="hint" hidden>
             Noch keine Stimme angelegt – weiter unten in der Bibliothek
             anlegen.
@@ -149,7 +149,13 @@
           </div>
         </details>
 
-        <button id="generate" class="primary">Sprache erzeugen</button>
+        <div class="row generate-row">
+          <button id="generate" class="primary">Sprache erzeugen</button>
+          <label class="check"
+            ><input id="autoplay" type="checkbox" checked /> Automatisch
+            abspielen</label
+          >
+        </div>
         <p id="eta" class="hint eta"></p>
 
         <div id="progress" class="progress" hidden>
@@ -178,19 +184,47 @@
       <section id="library" class="card">
         <div class="row between">
           <h2>Stimmen-Bibliothek</h2>
-          <button id="prepare-all" type="button" class="secondary">
-            Alle für dieses Modell vorbereiten
-          </button>
+          <div class="row">
+            <button id="voice-new" type="button" class="secondary">
+              ＋ Person anlegen
+            </button>
+            <button id="prepare-all" type="button" class="secondary">
+              Alle für dieses Modell vorbereiten
+            </button>
+          </div>
         </div>
         <p class="hint" id="library-hint"></p>
 
-        <div id="voice-list" class="voice-list"></div>
+        <!-- Nur Bilder mit Namen darunter; grüner Rahmen = für dieses Modell
+             bereit. Ein Klick öffnet die Details. -->
+        <div id="voice-list" class="voice-grid"></div>
         <p id="voice-list-empty" class="hint" hidden>
           Noch keine Person angelegt.
         </p>
 
-        <details id="voice-form-box">
-          <summary id="voice-form-title">Neue Person anlegen</summary>
+        <p id="library-error" class="error" hidden></p>
+
+        <dialog id="voice-dialog" class="voice-dialog">
+          <div class="row between dialog-head">
+            <div>
+              <h2 id="voice-dialog-title">Neue Person anlegen</h2>
+              <small id="voice-dialog-state" class="badge" hidden></small>
+            </div>
+            <button
+              id="voice-close"
+              type="button"
+              class="secondary"
+              aria-label="Schließen"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div id="voice-current" hidden>
+            <label for="voice-audio-current">Hinterlegte Referenzaufnahme</label>
+            <audio id="voice-audio-current" controls preload="none"></audio>
+          </div>
+
           <form id="voice-form">
             <div class="grid">
               <div>
@@ -224,16 +258,29 @@
             <input id="voice-description" type="text" maxlength="500"
               placeholder="z. B. Aufnahme vom 03.09., ruhiger Raum" />
 
-            <div class="row">
+            <div class="row" id="voice-prepare-box">
+              <label class="check"
+                ><input id="voice-prepare" type="checkbox" checked /> Stimme
+                direkt für dieses Modell vorbereiten</label
+              >
+            </div>
+
+            <div class="row dialog-actions">
               <button id="voice-save" type="submit" class="primary">Speichern</button>
-              <button id="voice-cancel" type="button" class="secondary" hidden>
-                Abbrechen
+              <button id="voice-use" type="button" class="secondary" hidden>
+                Verwenden
+              </button>
+              <button id="voice-prepare-now" type="button" class="secondary" hidden>
+                Vorbereiten
+              </button>
+              <button id="voice-delete" type="button" class="danger" hidden>
+                Löschen
               </button>
             </div>
           </form>
-        </details>
 
-        <p id="library-error" class="error" hidden></p>
+          <p id="voice-dialog-error" class="error" hidden></p>
+        </dialog>
       </section>
     </main>
 

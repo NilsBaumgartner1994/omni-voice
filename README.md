@@ -109,16 +109,33 @@ Unter „Erweiterte Einstellungen“ lassen sich Tempo, Diffusionsschritte,
 Guidance-Scale und eine feste Audiolänge einstellen. Steuerzeichen aus OmniVoice
 wie `[laughter]` oder `[B EY1 S]` funktionieren direkt im Text.
 
+Neben „Sprache erzeugen“ steht der Schalter **„Automatisch abspielen“**: ist er
+gesetzt (Voreinstellung), läuft das Ergebnis los, sobald es fertig ist. Wer beim
+Erzeugen nebenbei etwas anderes hört, nimmt den Haken weg – die Aufnahme landet
+trotzdem im Ergebnis-Player und im Download.
+
 ### Die Stimm-Bibliothek
 
-Unten auf der Seite lassen sich **Personen** anlegen: Name, Bild (optional),
-Referenz-Audio und der zugehörige Referenztext. Danach steht die Person im Tab
-„Gespeicherte Stimme“ zur Auswahl – Text eintippen, erzeugen, fertig.
+Unten auf der Seite steht die Bibliothek als **Bilderleiste**: pro Person nur
+das Bild mit dem Namen darunter – ohne hinterlegtes Bild der Anfangsbuchstabe.
+Ein **grüner Ring** um das Bild heißt „für das geladene Modell berechnet“, ohne
+Ring fehlt die Berechnung noch.
 
-Beim ersten Auftrag rechnet das Modell aus der Aufnahme einmal die Stimme aus
-und legt das Ergebnis neben der Person ab; jeder weitere Auftrag überspringt
-diesen Schritt. Wer nicht warten will, drückt vorher „Vorbereiten“ (oder
-„Alle für dieses Modell vorbereiten“).
+„＋ Person anlegen“ öffnet das Formular für eine neue Person: Name, Bild
+(optional), Referenz-Audio und der zugehörige Referenztext. Danach steht die
+Person im Tab „Gespeicherte Stimme“ zur Auswahl – Text eintippen, erzeugen,
+fertig.
+
+Ein **Klick auf eine Person** öffnet ihre Details: Referenzaufnahme anhören,
+Name, Bild, Aufnahme, Referenztext und Notiz ändern – und die Knöpfe
+„Verwenden“, „Vorbereiten“ bzw. „Neu berechnen“ und „Löschen“.
+
+Neu angelegte Personen werden gleich vorbereitet („Stimme direkt für dieses
+Modell vorbereiten“, voreingestellt); das Anlegen dauert dadurch etwas länger,
+dafür läuft der erste Auftrag sofort los. Ohne Haken – oder wenn die
+Berechnung scheitert, etwa weil das Modell noch lädt – bleibt die Person
+trotzdem gespeichert, und die Stimme entsteht beim ersten Auftrag oder per
+„Vorbereiten“ (bzw. „Alle für dieses Modell vorbereiten“).
 
 **Modellwechsel:** Quelldaten und Berechnetes liegen getrennt:
 
@@ -209,7 +226,7 @@ passend zur Maschine und benutzt ansonsten exakt die Upstream-Oberfläche.
 | `GET` | `/api/estimate` | Dauerprognose für die angegebenen Einstellungen |
 | `POST` | `/api/tts` | Synthese, Antwort ist eine WAV-Datei |
 | `GET` | `/api/voices` | Stimm-Bibliothek auflisten (inkl. „berechnet?“) |
-| `POST` | `/api/voices` | Person anlegen (multipart: `name`, `ref_audio`, `ref_text`, `image`, …) |
+| `POST` | `/api/voices` | Person anlegen (multipart: `name`, `ref_audio`, `ref_text`, `image`, …; `prepare=false` überspringt das Berechnen) |
 | `GET` `POST` `DELETE` | `/api/voices/{id}` | einzelne Person lesen, ändern, löschen |
 | `GET` | `/api/voices/{id}/audio` · `/image` | hinterlegte Dateien |
 | `POST` | `/api/voices/{id}/prepare` | Stimme für das geladene Modell berechnen |
@@ -255,7 +272,8 @@ curl -X POST http://localhost:7860/api/voices \
   -F ref_text="Transkript der Referenzaufnahme." \
   -F ref_audio=@referenz.wav \
   -F image=@anna.jpg
-# {"id": "anna-beispiel-a1b2c3", "prepared": false, ...}
+# Die Stimme wird dabei gleich berechnet (`-F prepare=false` überspringt das):
+# {"id": "anna-beispiel-a1b2c3", "prepared": true, ...}
 
 # und benutzen
 curl -X POST http://localhost:7860/api/tts \

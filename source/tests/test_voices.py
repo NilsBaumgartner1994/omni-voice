@@ -115,7 +115,6 @@ def test_create_list_and_serve_assets(client: TestClient) -> None:
     created = _create(client)
     assert created["name"] == "Anna Beispiel"
     assert created["has_audio"] and created["has_image"]
-    assert created["prepared"] is False
 
     listing = client.get("/api/voices").json()
     assert listing["count"] == 1
@@ -163,8 +162,42 @@ def test_prepare_then_generate_with_saved_voice(client: TestClient) -> None:
     assert response.headers["content-type"] == "audio/wav"
 
 
+def test_new_voice_is_prepared_right_away(client: TestClient) -> None:
+    """Ohne Vorbereitung wartet der erste Auftrag – also gleich beim Anlegen."""
+    assert _create(client)["prepared"] is True
+    assert _create(client, name="Bea", prepare="false")["prepared"] is False
+
+
+def test_create_keeps_the_person_when_preparing_fails(tmp_path) -> None:
+    """Das Modell lädt noch: die Person bleibt, das Rechnen holt man nach."""
+    from omnivoice_server.engine import SynthesisError
+
+    class UnpreparedEngine(DummyEngine):
+        def prepare_voice(self, ref_audio_path, ref_text):
+            raise SynthesisError("Das Modell ist noch nicht geladen.")
+
+    settings = Settings(
+        engine="dummy", load_asr=False, library_dir=str(tmp_path / "voices")
+    )
+    engine = UnpreparedEngine(settings)
+    engine.load()
+    app = create_app(settings, engine=engine, load_on_startup=False)
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/voices",
+            data={"name": "Anna"},
+            files={"ref_audio": ("a.wav", _wav(), "audio/wav")},
+        )
+        assert created.status_code == 201, created.text
+        body = created.json()
+        assert body["prepared"] is False
+        assert "noch nicht geladen" in body["error"]
+        assert client.get("/api/voices").json()["count"] == 1
+
+
 def test_generation_prepares_on_demand(client: TestClient) -> None:
-    voice = _create(client)
+    voice = _create(client, prepare="false")
+    assert voice["prepared"] is False
     response = client.post(
         "/api/tts", data={"text": "Ohne Vorbereitung.", "voice_id": voice["id"]}
     )
@@ -193,7 +226,6 @@ def test_switching_the_model_keeps_people_and_recomputes_voices(
 ) -> None:
     """Der eigentliche Zweck der Trennung: Gewichte tauschen, Rest bleibt."""
     voice = _create(client)
-    client.post(f"/api/voices/{voice['id']}/prepare")
     engine = client.app.state.engine
 
     engine.status.model = "ein-anderes-stimmmodell"

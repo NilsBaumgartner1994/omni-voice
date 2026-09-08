@@ -31,6 +31,12 @@
   box-sizing: border-box;
 }
 
+/* Ohne das gewinnt jede eigene display-Regel (.row, button, …) gegen das
+   hidden-Attribut, mit dem die Oberflaeche Knoepfe und Felder ausblendet. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -327,7 +333,7 @@ code {
   border-radius: 50%;
   object-fit: cover;
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 2px solid var(--border);
 }
 
 .voice-avatar.placeholder {
@@ -338,77 +344,51 @@ code {
   color: var(--muted);
 }
 
-.voice-picker {
+/* Bibliothek und Auswahl zeigen dasselbe: Bild, Name darunter. */
+.voice-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
 }
 
-.voice-card {
+.voice-tile {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.45rem;
+  padding: 0.6rem 0.35rem;
   text-align: center;
-  padding: 0.7rem 0.5rem;
+  background: transparent;
+  border-color: transparent;
 }
 
-.voice-card.selected {
+.voice-tile:hover {
+  border-color: var(--border);
+}
+
+.voice-tile .voice-avatar {
+  width: 72px;
+  height: 72px;
+  min-width: 72px;
+  font-size: 1.6rem;
+}
+
+/* Grüner Ring: für die geladenen Gewichte ist die Stimme berechnet. */
+.voice-tile.prepared .voice-avatar {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 2px var(--ok);
+}
+
+.voice-tile.selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
-.voice-card-name {
+.voice-tile-name {
   font-weight: 600;
+  font-size: 0.9rem;
   overflow-wrap: anywhere;
-}
-
-.voice-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.voice-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  padding: 0.8rem 0;
-  border-top: 1px solid var(--border);
-}
-
-.voice-row:first-child {
-  border-top: none;
-}
-
-.voice-row-main {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  flex: 1;
-  min-width: 0;
-}
-
-.voice-row-main .hint {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.voice-row-main audio {
-  margin-top: 0.35rem;
-  max-width: 320px;
-  height: 34px;
-}
-
-.voice-row-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  justify-content: flex-end;
-}
-
-.voice-row-actions button {
-  padding: 0.35rem 0.6rem;
-  font-size: 0.85rem;
 }
 
 button.danger {
@@ -418,6 +398,7 @@ button.danger {
 
 .badge {
   align-self: flex-start;
+  display: inline-block;
   border-radius: 999px;
   border: 1px solid var(--border);
   padding: 0.05rem 0.5rem;
@@ -435,6 +416,37 @@ button.danger {
   border-color: var(--warn);
 }
 
+/* -------------------------------------------------- Details einer Person */
+.voice-dialog {
+  width: min(560px, 92vw);
+  max-height: 88vh;
+  /* Auf niedrigen Fenstern muss der Inhalt scrollen, sonst sind die Knöpfe
+     unten nicht erreichbar. */
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--fg);
+  padding: 1.25rem;
+}
+
+.voice-dialog::backdrop {
+  background: rgb(0 0 0 / 55%);
+}
+
+.dialog-head {
+  align-items: flex-start;
+  margin-top: 0;
+}
+
+.dialog-head h2 {
+  margin: 0;
+}
+
+#voice-close {
+  padding: 0.25rem 0.6rem;
+}
+
 #voice-form button.primary {
   width: auto;
   margin-top: 0;
@@ -444,12 +456,23 @@ button.danger {
   align-items: center;
 }
 
-@media (max-width: 620px) {
-  .voice-row {
-    flex-wrap: wrap;
-  }
+.dialog-actions {
+  margin-top: 1.2rem;
+}
 
-  .voice-row-actions {
-    justify-content: flex-start;
-  }
+/* Löschen steht abseits der übrigen Knöpfe – kein Griff daneben. */
+#voice-delete {
+  margin-left: auto;
+}
+
+/* Knopf und Schalter stehen nebeneinander; der Knopf nimmt den Rest. */
+.generate-row {
+  margin-top: 1.1rem;
+  gap: 1rem;
+}
+
+.generate-row .primary {
+  width: auto;
+  flex: 1 1 12rem;
+  margin-top: 0;
 }

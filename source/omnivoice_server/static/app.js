@@ -308,8 +308,14 @@ async function toggleRecording() {
 }
 
 // ------------------------------------------------------ Stimm-Bibliothek
+// Bei offenem Dialog liegt die Seite dahinter inert – die Meldung muss dann
+// im Dialog stehen, sonst sieht sie niemand.
 function libraryError(message) {
-  const node = $("library-error");
+  const dialog = $("voice-dialog");
+  const inside = Boolean(dialog && dialog.open);
+  const node = $(inside ? "voice-dialog-error" : "library-error");
+  const other = $(inside ? "library-error" : "voice-dialog-error");
+  other.hidden = true;
   node.textContent = message;
   node.hidden = !message;
 }
@@ -335,13 +341,25 @@ function avatarFor(voice) {
   return initial;
 }
 
-function badgeFor(voice) {
-  const badge = document.createElement("small");
-  badge.className = `badge ${voice.prepared ? "ready" : "pending"}`;
-  badge.textContent = voice.prepared
-    ? "für dieses Modell bereit"
-    : "noch nicht berechnet";
-  return badge;
+// Eine Kachel zeigt nur Bild und Namen; ob die Stimme für das geladene Modell
+// bereitliegt, sagt der grüne Rahmen (und -- für Vorlesegeräte -- der Titel).
+function voiceTile(voice, onClick, selected = false) {
+  const tile = document.createElement("button");
+  tile.type = "button";
+  tile.className = "voice-tile";
+  tile.classList.toggle("prepared", Boolean(voice.prepared));
+  tile.classList.toggle("selected", selected);
+  tile.title = voice.prepared
+    ? `${voice.name} – für dieses Modell bereit`
+    : `${voice.name} – noch nicht berechnet`;
+  tile.setAttribute("aria-label", tile.title);
+  tile.appendChild(avatarFor(voice));
+  const name = document.createElement("span");
+  name.className = "voice-tile-name";
+  name.textContent = voice.name;
+  tile.appendChild(name);
+  tile.addEventListener("click", () => onClick(voice));
+  return tile;
 }
 
 async function loadVoices() {
@@ -354,24 +372,16 @@ async function loadVoices() {
   if (state.voiceId && !voiceById(state.voiceId)) state.voiceId = null;
   renderVoicePicker();
   renderVoiceList();
+  renderDialogState();
 }
 
 function renderVoicePicker() {
   const picker = $("voice-picker");
   picker.innerHTML = "";
   for (const voice of state.voices) {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "voice-card";
-    if (voice.id === state.voiceId) card.classList.add("selected");
-    card.appendChild(avatarFor(voice));
-    const name = document.createElement("span");
-    name.className = "voice-card-name";
-    name.textContent = voice.name;
-    card.appendChild(name);
-    card.appendChild(badgeFor(voice));
-    card.addEventListener("click", () => selectVoice(voice.id));
-    picker.appendChild(card);
+    picker.appendChild(
+      voiceTile(voice, () => selectVoice(voice.id), voice.id === state.voiceId),
+    );
   }
   $("voice-picker-empty").hidden = state.voices.length > 0;
 }
@@ -394,59 +404,9 @@ function renderVoiceList() {
   const list = $("voice-list");
   list.innerHTML = "";
   for (const voice of state.voices) {
-    const row = document.createElement("div");
-    row.className = "voice-row";
-    row.appendChild(avatarFor(voice));
-
-    const main = document.createElement("div");
-    main.className = "voice-row-main";
-    const title = document.createElement("strong");
-    title.textContent = voice.name;
-    main.appendChild(title);
-    const meta = document.createElement("small");
-    meta.className = "hint";
-    meta.textContent = [voice.description, voice.ref_text]
-      .filter(Boolean)
-      .join(" · ")
-      .slice(0, 120);
-    main.appendChild(meta);
-    main.appendChild(badgeFor(voice));
-    const player = document.createElement("audio");
-    player.controls = true;
-    player.preload = "none";
-    player.src = `/api/voices/${voice.id}/audio?v=${voice.revision}`;
-    main.appendChild(player);
-    row.appendChild(main);
-
-    const actions = document.createElement("div");
-    actions.className = "voice-row-actions";
-    actions.appendChild(
-      button("Verwenden", "secondary", () => {
-        setMode("saved");
-        if (state.voiceId !== voice.id) selectVoice(voice.id);
-        $("text").focus();
-      }),
-    );
-    if (!voice.prepared) {
-      actions.appendChild(
-        button("Vorbereiten", "secondary", (node) => prepareVoice(voice.id, node)),
-      );
-    }
-    actions.appendChild(button("Bearbeiten", "secondary", () => editVoice(voice.id)));
-    actions.appendChild(button("Löschen", "danger", () => deleteVoice(voice.id)));
-    row.appendChild(actions);
-    list.appendChild(row);
+    list.appendChild(voiceTile(voice, () => openVoice(voice.id)));
   }
   $("voice-list-empty").hidden = state.voices.length > 0;
-}
-
-function button(label, variant, handler) {
-  const node = document.createElement("button");
-  node.type = "button";
-  node.className = variant;
-  node.textContent = label;
-  node.addEventListener("click", () => handler(node));
-  return node;
 }
 
 async function voiceRequest(url, options, busyNode, busyLabel) {
@@ -501,45 +461,108 @@ async function submitVoiceForm(event) {
   const image = $("voice-image").files[0];
   if (image) form.set("image", image, image.name);
 
+  // Neu angelegte Personen werden gleich vorbereitet – sonst wartet der erste
+  // Auftrag darauf. Beim Bearbeiten macht das die Bibliothek nicht ungefragt.
+  const prepare = !state.editing && $("voice-prepare").checked;
+  form.set("prepare", prepare ? "true" : "false");
+
   const url = state.editing ? `/api/voices/${state.editing}` : "/api/voices";
   const saved = await voiceRequest(
     url,
     { method: "POST", body: form },
     $("voice-save"),
-    "Speichere …",
+    prepare ? "Speichere & bereite vor …" : "Speichere …",
   );
   if (!saved) return;
-  resetVoiceForm();
+  closeVoiceDialog();
   await loadVoices();
+  // Die Person steht, nur das Rechnen ging schief – das ist ein Hinweis,
+  // kein verlorenes Formular.
+  if (saved.error) {
+    libraryError(
+      `„${saved.name}" ist gespeichert, aber noch nicht vorbereitet: ${saved.error}`,
+    );
+  }
 }
 
-function editVoice(id) {
+// -- Detailansicht einer Person ---------------------------------------------
+function openVoice(id) {
   const voice = voiceById(id);
   if (!voice) return;
+  resetVoiceForm();
   state.editing = id;
   $("voice-name").value = voice.name;
   $("voice-ref-text").value = voice.ref_text || "";
   $("voice-description").value = voice.description || "";
   $("voice-language").value = voice.language || "";
-  $("voice-audio").value = "";
-  $("voice-image").value = "";
   const preview = $("voice-image-preview");
   preview.hidden = !voice.has_image;
   if (voice.has_image) preview.src = `/api/voices/${id}/image?v=${voice.revision}`;
-  $("voice-form-title").textContent = `„${voice.name}" bearbeiten`;
-  $("voice-cancel").hidden = false;
-  $("voice-form-box").open = true;
+  const current = $("voice-audio-current");
+  $("voice-current").hidden = !voice.has_audio;
+  if (voice.has_audio) current.src = `/api/voices/${id}/audio?v=${voice.revision}`;
+  openVoiceDialog();
+}
+
+function newVoice() {
+  resetVoiceForm();
+  openVoiceDialog();
+}
+
+function openVoiceDialog() {
+  const dialog = $("voice-dialog");
+  renderDialogState();
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
   $("voice-name").focus();
+}
+
+function closeVoiceDialog() {
+  const dialog = $("voice-dialog");
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+  $("voice-audio-current").pause();
+  resetVoiceForm();
+}
+
+// Titel, Zustand und Knöpfe hängen daran, ob eine bestehende Person offen ist
+// und ob ihre Stimme für die geladenen Gewichte schon berechnet wurde.
+function renderDialogState() {
+  const voice = state.editing ? voiceById(state.editing) : null;
+  if (state.editing && !voice) {
+    closeVoiceDialog();
+    return;
+  }
+  $("voice-dialog-title").textContent = voice
+    ? `„${voice.name}" bearbeiten`
+    : "Neue Person anlegen";
+  const badge = $("voice-dialog-state");
+  badge.hidden = !voice;
+  if (voice) {
+    badge.className = `badge ${voice.prepared ? "ready" : "pending"}`;
+    badge.textContent = voice.prepared
+      ? "für dieses Modell bereit"
+      : "noch nicht berechnet";
+  }
+  $("voice-save").textContent = voice ? "Änderungen speichern" : "Speichern";
+  $("voice-prepare-box").hidden = Boolean(voice);
+  $("voice-use").hidden = !voice;
+  $("voice-delete").hidden = !voice;
+  const prepareButton = $("voice-prepare-now");
+  prepareButton.hidden = !voice;
+  if (voice) {
+    prepareButton.textContent = voice.prepared ? "Neu berechnen" : "Vorbereiten";
+  }
 }
 
 function resetVoiceForm() {
   state.editing = null;
   $("voice-form").reset();
   $("voice-image-preview").hidden = true;
-  $("voice-form-title").textContent = "Neue Person anlegen";
-  $("voice-cancel").hidden = true;
   $("voice-audio-preview").hidden = true;
+  $("voice-current").hidden = true;
   libraryError("");
+  renderDialogState();
 }
 
 async function deleteVoice(id) {
@@ -548,13 +571,13 @@ async function deleteVoice(id) {
   if (!window.confirm(`„${voice.name}" mitsamt Aufnahme und Bild löschen?`)) return;
   const done = await voiceRequest(`/api/voices/${id}`, { method: "DELETE" });
   if (!done) return;
-  if (state.editing === id) resetVoiceForm();
+  closeVoiceDialog();
   await loadVoices();
 }
 
-async function prepareVoice(id, node) {
+async function prepareVoice(id, node, force = false) {
   const done = await voiceRequest(
-    `/api/voices/${id}/prepare`,
+    `/api/voices/${id}/prepare${force ? "?force=true" : ""}`,
     { method: "POST" },
     node,
     "Berechne …",
@@ -665,7 +688,9 @@ async function generate() {
     parts.push(`in ${formatSeconds(elapsed)} erzeugt`);
     if (predicted) parts.push(`Prognose war ${formatSeconds(predicted)}`);
     $("result-meta").textContent = parts.join(" · ");
-    $("output").play().catch(() => {});
+    // Autoplay kann der Browser verweigern (kein Nutzerklick, stumm geschaltet);
+    // die Aufnahme steht dann trotzdem im Ergebnis-Player.
+    if ($("autoplay").checked) $("output").play().catch(() => {});
   } catch (err) {
     showError(err.message);
   } finally {
@@ -708,7 +733,22 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("generate").addEventListener("click", generate);
   $("voice-form").addEventListener("submit", submitVoiceForm);
-  $("voice-cancel").addEventListener("click", resetVoiceForm);
+  $("voice-new").addEventListener("click", newVoice);
+  $("voice-close").addEventListener("click", closeVoiceDialog);
+  // Escape schließt den Dialog am Browser vorbei: Formular mit aufräumen.
+  $("voice-dialog").addEventListener("close", resetVoiceForm);
+  $("voice-use").addEventListener("click", () => {
+    const id = state.editing;
+    closeVoiceDialog();
+    setMode("saved");
+    if (state.voiceId !== id) selectVoice(id);
+    $("text").focus();
+  });
+  $("voice-prepare-now").addEventListener("click", (event) => {
+    const voice = voiceById(state.editing);
+    if (voice) prepareVoice(voice.id, event.currentTarget, voice.prepared);
+  });
+  $("voice-delete").addEventListener("click", () => deleteVoice(state.editing));
   $("prepare-all").addEventListener("click", (event) =>
     prepareAllVoices(event.currentTarget),
   );

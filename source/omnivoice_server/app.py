@@ -362,6 +362,22 @@ def create_app(
     def _library_error(exc: LibraryError) -> HTTPException:
         return HTTPException(status_code=422, detail=str(exc))
 
+    async def _prepare_quietly(voice: Voice, *, force: bool = False) -> dict[str, Any]:
+        """Stimme berechnen, ohne dass ein Fehler den Aufruf umwirft.
+
+        Beim Anlegen und beim Durchrechnen der ganzen Bibliothek zählt, dass
+        die Person erhalten bleibt: schlägt die Berechnung fehl (Modell lädt
+        noch, Aufnahme unbrauchbar), steht der Grund in ``error`` und
+        „Vorbereiten“ holt es später nach.
+        """
+        try:
+            return await run_in_threadpool(voices.prepare, voice, force=force)
+        except (SynthesisError, FileNotFoundError, OSError) as exc:
+            return {"prepared": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - eine kaputte Stimme
+            logger.exception("Stimme %s konnte nicht vorbereitet werden", voice.id)
+            return {"prepared": False, "error": f"{type(exc).__name__}: {exc}"}
+
     @app.get("/api/voices")
     def list_voices() -> dict[str, Any]:
         entries = [voices.describe(voice) for voice in library.list()]
@@ -399,7 +415,13 @@ def create_app(
             )
         except LibraryError as exc:
             raise _library_error(exc) from exc
-        return voices.describe(voice)
+        # Eine frisch angelegte Person ist erst mit berechneter Stimme sofort
+        # benutzbar, deshalb wird sie standardmäßig gleich vorbereitet.
+        # `prepare=false` überspringt das (z. B. für Stapel-Importe).
+        payload = voices.describe(voice)
+        if _as_bool(form.get("prepare"), True):
+            payload.update(await _prepare_quietly(voice))
+        return payload
 
     @app.post("/api/voices/prepare-all")
     async def prepare_all_voices(force: bool = False) -> dict[str, Any]:
@@ -407,17 +429,7 @@ def create_app(
         results = []
         for voice in library.list():
             entry: dict[str, Any] = {"id": voice.id, "name": voice.name}
-            try:
-                entry.update(
-                    await run_in_threadpool(voices.prepare, voice, force=force)
-                )
-            except (SynthesisError, FileNotFoundError, OSError) as exc:
-                entry.update({"prepared": False, "error": str(exc)})
-            except Exception as exc:  # noqa: BLE001 - eine kaputte Stimme
-                logger.exception("Stimme %s konnte nicht vorbereitet werden", voice.id)
-                entry.update(
-                    {"prepared": False, "error": f"{type(exc).__name__}: {exc}"}
-                )
+            entry.update(await _prepare_quietly(voice, force=force))
             results.append(entry)
         return {
             "model_key": voices.model_key,
