@@ -135,6 +135,18 @@
         </details>
 
         <button id="generate" class="primary">Sprache erzeugen</button>
+        <p id="eta" class="hint eta"></p>
+
+        <div id="progress" class="progress" hidden>
+          <div class="progress-track">
+            <div id="progress-fill" class="progress-fill"></div>
+          </div>
+          <div class="row between">
+            <small id="progress-text">Sprache wird erzeugt …</small>
+            <small id="progress-elapsed"></small>
+          </div>
+        </div>
+
         <p id="error" class="error" hidden></p>
       </section>
 
