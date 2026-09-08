@@ -35,15 +35,12 @@ services:
       # Threads für die CPU-Inferenz (leer = alle Kerne).
       OMP_NUM_THREADS: ${OMP_NUM_THREADS:-}
     volumes:
-      # Modellgewichte überleben `docker compose down` und Neubauten.
-      - omnivoice-models:/models
-      # Stimm-Bibliothek: bewusst getrennt vom Modell-Volume. Für einen Ordner
-      # auf dem Host (einfacher zu sichern) in der .env setzen:
-      #   OMNIVOICE_DATA_PATH=./data
-      - ${OMNIVOICE_DATA_PATH:-omnivoice-voices}:/data
+      # Beides liegt als normaler Ordner auf dem Host: sichtbar, sicherbar und
+      # unabhängig von `docker compose down -v`. Andere Pfade per .env.
+      # Modellgewichte (mehrere GB, werden einmal heruntergeladen).
+      - ${OMNIVOICE_MODELS_PATH:-./models}:/models
+      # Stimm-Bibliothek: Personen, Bilder, Aufnahmen, Texte. Bewusst getrennt
+      # von den Gewichten, damit ein Modellwechsel sie nicht anfasst.
+      - ${OMNIVOICE_DATA_PATH:-./data}:/data
     restart: unless-stopped
     stop_grace_period: 30s
-
-volumes:
-  omnivoice-models:
-  omnivoice-voices:

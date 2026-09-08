@@ -14,7 +14,8 @@ dem eigenen Laptop läuft** – inklusive kleiner Weboberfläche und REST-API.
 * Dauerprognose: die Oberfläche zeigt vorab und während der Erzeugung, wie
   lange es voraussichtlich noch dauert – gelernt aus den bisherigen Läufen
   auf dem eigenen Rechner.
-* Modellgewichte liegen in einem Docker-Volume und werden nur einmal geladen.
+* Modellgewichte und Stimm-Bibliothek liegen als normale Ordner auf dem
+  Rechner (`models/` und `data/`) – sichtbar, sicherbar, nur einmal geladen.
 * Smoke-Test-Modus, mit dem sich der Container ohne Modell-Download prüfen lässt.
 
 | Hell | Dunkel |
@@ -37,6 +38,17 @@ docker compose up -d --build
 ```
 
 Danach im Browser öffnen: **<http://localhost:7860>**
+
+Dabei entstehen zwei Ordner neben dem Repository:
+
+| Ordner | Inhalt |
+| --- | --- |
+| `models/` | Modellgewichte (mehrere GB, werden einmal geladen) |
+| `data/` | Stimm-Bibliothek: Personen, Bilder, Aufnahmen, Texte |
+
+Beide gehören dem eigenen Benutzerkonto und lassen sich ganz normal sichern
+oder verschieben (andere Pfade: `OMNIVOICE_MODELS_PATH` / `OMNIVOICE_DATA_PATH`
+in der `.env`). `docker compose down` – auch mit `-v` – fasst sie nicht an.
 
 Beim **ersten** Start lädt der Container die Modellgewichte von Hugging Face
 (mehrere GB). Solange zeigt die Oberfläche „Modell wird geladen …“. Fortschritt:
@@ -125,13 +137,10 @@ Aufnahmen und Texte bleiben dabei unangetastet. Dasselbe passiert automatisch,
 wenn für eine Person ein neues Referenz-Audio oder ein neuer Referenztext
 hinterlegt wird.
 
-Die Bibliothek liegt in einem **eigenen Docker-Volume** (`/data`), getrennt von
-den Modellgewichten in `/models`. Wer die Daten lieber als normalen Ordner auf
-dem Rechner haben will (praktisch für Backups), setzt in der `.env`:
-
-```bash
-OMNIVOICE_DATA_PATH=./data
-```
+Die Bibliothek liegt im Ordner `data/` auf dem Rechner, getrennt von den
+Gewichten in `models/`. Ein Backup ist damit ein simples Kopieren des Ordners;
+zum Umziehen auf einen anderen Rechner reicht es, `data/` mitzunehmen und die
+Stimmen dort einmal vorbereiten zu lassen.
 
 ### Wie lange dauert das noch?
 
@@ -158,7 +167,7 @@ Programm hat die CPU blockiert) verzerrt sie also nicht.
 
 Die Historie hängt an Engine, Modell, Gerät und dtype – nach einem Wechsel von
 CPU auf GPU wird also neu gelernt statt falsch geschätzt. Sie liegt im
-Modell-Volume (`/models/generation-timings.json`) und überlebt damit einen
+Modell-Ordner (`models/generation-timings.json`) und überlebt damit einen
 Neustart des Containers.
 
 ![Stimme klonen](docs/screenshot-clone.png)
@@ -286,7 +295,8 @@ Alles über Umgebungsvariablen, am einfachsten per `.env` (`cp .env.example .env
 | `OMNIVOICE_ASR_MODEL` | `openai/whisper-large-v3-turbo` | verwendetes Whisper-Modell |
 | `OMNIVOICE_MAX_TEXT_CHARS` | `2000` | Längenlimit pro Anfrage |
 | `OMNIVOICE_ENGINE` | `omnivoice` | `dummy` = Testton ohne Modell |
-| `OMNIVOICE_DATA_PATH` | Docker-Volume | Host-Ordner für die Stimm-Bibliothek, z. B. `./data` |
+| `OMNIVOICE_MODELS_PATH` | `./models` | Ordner auf dem Host für die Modellgewichte |
+| `OMNIVOICE_DATA_PATH` | `./data` | Ordner auf dem Host für die Stimm-Bibliothek |
 | `OMNIVOICE_LIBRARY_DIR` | `/data/voices` | Verzeichnis der Stimm-Bibliothek im Container |
 | `OMNIVOICE_MAX_IMAGE_BYTES` | `5242880` | Obergrenze für hinterlegte Bilder |
 | `OMNIVOICE_VOICE_CACHE_SIZE` | `8` | berechnete Stimmen gleichzeitig im RAM |
@@ -296,9 +306,21 @@ Alles über Umgebungsvariablen, am einfachsten per `.env` (`cp .env.example .env
 | `HF_ENDPOINT` | leer | Spiegelserver für Hugging Face |
 | `HF_HUB_OFFLINE` | leer | `1` = keine Netzwerkzugriffe mehr |
 
-Die Modellgewichte liegen im Volume `omnivoice-models` (im Container unter
-`/models`). `docker compose down` lässt sie unangetastet;
-`docker compose down -v` bzw. `make clean-models` löscht sie.
+Modellgewichte (`models/` → `/models`) und Stimm-Bibliothek (`data/` →
+`/data`) sind Ordner auf dem Host und überleben jedes `docker compose down`,
+auch mit `-v`. `make clean-models` löscht nur die Gewichte und erzwingt damit
+einen Neu-Download; die Stimmen bleiben stehen.
+
+Wer schon vor dieser Änderung gestartet ist, hat die Gewichte noch im alten
+Docker-Volume. Statt sie neu zu laden, einmal umkopieren:
+
+```bash
+docker compose down
+mkdir -p models
+docker run --rm -v omnivoice-models:/from -v "$PWD/models":/to \
+  alpine sh -c 'cp -a /from/. /to/'
+docker compose up -d
+```
 
 ---
 
@@ -369,6 +391,8 @@ mehrere GB herunterzuladen.
 | „Fehler beim Laden“ + `UnsupportedProtocol: Request URL is missing an 'http://' …` | `HF_ENDPOINT` ist leer gesetzt. Zeile aus der `.env` entfernen oder auf eine vollständige URL setzen, danach `docker compose up -d` |
 | Port 7860 belegt | `OMNIVOICE_PORT=8080` in die `.env` |
 | Prognose bleibt „noch unbekannt“ | Es ist noch kein Auftrag durchgelaufen (oder Gerät/Modell wurde gewechselt – die Historie startet dann neu) |
+| „Permission denied“ auf `/models` oder `/data` (Linux) | Ordner gehören root. `sudo chown -R 1000:1000 models data` – der Container läuft als UID 1000 |
+| Gewichte werden erneut heruntergeladen | Sie liegen noch im alten Docker-Volume; siehe „Konfiguration“ zum Umkopieren |
 | Stimmen stehen plötzlich auf „noch nicht berechnet“ | Modell, dtype oder Referenzaufnahme wurde gewechselt – „Alle für dieses Modell vorbereiten“ drücken |
 | Healthcheck bleibt „starting“ | Normal, solange Gewichte geladen werden (Startphase: 30 Minuten) |
 
@@ -378,7 +402,7 @@ mehrere GB herunterzuladen.
 
 ```
 Dockerfile               CPU-Image (Build-Args für CUDA)
-docker-compose.yml       Standarddienst (CPU) + Volumes für Gewichte und Stimmen
+docker-compose.yml       Standarddienst (CPU) + Host-Ordner models/ und data/
 docker-compose.gpu.yml   Override für NVIDIA-GPUs
 docker/entrypoint.sh     serve | gradio | prefetch | infer | shell
 omnivoice_server/        FastAPI-Server, Weboberfläche, Dauerprognose
@@ -387,6 +411,8 @@ omnivoice_server/        FastAPI-Server, Weboberfläche, Dauerprognose
   voices.py              Brücke: berechnet und findet Stimmen je Modell
 scripts/                 Modell-Prefetch und Smoke-Test
 tests/                   Tests ohne Modellgewichte
+models/                  Modellgewichte (nicht eingecheckt)
+data/voices/             Stimm-Bibliothek (nicht eingecheckt)
 ```
 
 Upstream-Code ist bewusst **nicht** eingecheckt: das Image installiert das
