@@ -12,6 +12,10 @@ const state = {
   recorder: null,
   recordedBlob: null,
   info: null,
+  // Letztes Ergebnis: das erzeugte WAV plus die daraus schon gebauten
+  // Download-Dateien je Format ({ mp3: "blob:…" }).
+  result: null,
+  downloadRun: 0,
   // Latest answer of /api/estimate for the current settings.
   estimate: null,
   progressTimer: null,
@@ -80,6 +84,7 @@ async function loadInfo() {
       ? "Ohne Referenztext wird das Audio automatisch transkribiert (Whisper)."
       : "Referenztext bitte eintragen – die automatische Transkription (Whisper) ist deaktiviert.";
     $("text").maxLength = info.limits.max_text_chars;
+    buildDownloadFormats(info);
     $("footer-info").textContent =
       `${info.model.model || ""} · ${info.model.device || ""} · ` +
       `${info.sampling_rate} Hz · `;
@@ -136,6 +141,76 @@ function buildDesignControls(categories) {
     }
     grid.appendChild(wrapper);
   }
+}
+
+// ------------------------------------------------------- Download-Format
+function buildDownloadFormats(info) {
+  const formats = info.audio_formats || [];
+  if (!formats.length) return;
+  const select = $("download-format");
+  const previous = select.value;
+  select.innerHTML = "";
+  for (const format of formats) {
+    const option = document.createElement("option");
+    option.value = format.key;
+    option.textContent = format.label;
+    select.appendChild(option);
+  }
+  // MP3 gibt es nur mit ffmpeg; fehlt es, bleibt WAV als einzige Wahl.
+  const wanted = formats.some((format) => format.key === previous)
+    ? previous
+    : info.default_download_format || formats[0].key;
+  select.value = wanted;
+  select.disabled = formats.length < 2;
+  if (state.result) updateDownload();
+}
+
+/** Den Download-Link auf das gewählte Format setzen.
+ *
+ * Erzeugt wird immer WAV; ein anderes Format rechnet der Server einmal um
+ * (`/api/convert`) und das Ergebnis bleibt für weitere Klicks liegen. */
+async function updateDownload() {
+  const link = $("download");
+  const format = $("download-format").value || "wav";
+  if (!state.result) return;
+  const cached = state.result.urls[format];
+  if (cached) {
+    link.href = cached;
+    link.download = `omnivoice.${format}`;
+    link.removeAttribute("aria-disabled");
+    link.textContent = "⬇ Herunterladen";
+    return;
+  }
+
+  // Wechselt jemand schnell hin und her, gilt nur die letzte Anfrage.
+  const run = ++state.downloadRun;
+  link.removeAttribute("href");
+  link.setAttribute("aria-disabled", "true");
+  link.textContent = `⏳ ${format.toUpperCase()} wird erzeugt …`;
+  try {
+    const body = new FormData();
+    body.set("audio", state.result.blob, "omnivoice.wav");
+    body.set("format", format);
+    const response = await fetch("/api/convert", { method: "POST", body });
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        detail = (await response.json()).detail || detail;
+      } catch (err) {
+        /* keep the status code */
+      }
+      throw new Error(detail);
+    }
+    const blob = await response.blob();
+    if (run !== state.downloadRun) return;
+    state.result.urls[format] = URL.createObjectURL(blob);
+  } catch (err) {
+    if (run !== state.downloadRun) return;
+    showError(`Download als ${format.toUpperCase()} nicht möglich: ${err.message}`);
+    // Das WAV liegt immer vor -- damit bleibt der Knopf benutzbar.
+    $("download-format").value = "wav";
+  }
+  if (run === state.downloadRun) updateDownload();
 }
 
 function setMode(mode) {
@@ -677,9 +752,14 @@ async function generate() {
     }
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
+    // Die Blobs des letzten Laufs werden nicht mehr gebraucht.
+    if (state.result) {
+      for (const old of Object.values(state.result.urls)) URL.revokeObjectURL(old);
+    }
+    state.result = { blob, urls: { wav: url } };
     $("output").src = url;
-    $("download").href = url;
     $("result").hidden = false;
+    updateDownload();
     const seconds = response.headers.get("X-OmniVoice-Duration-Seconds");
     const measured = Number(response.headers.get("X-OmniVoice-Generation-Seconds"));
     const elapsed = measured > 0 ? measured : (performance.now() - started) / 1000;
@@ -714,6 +794,7 @@ document.addEventListener("DOMContentLoaded", () => {
     scheduleEstimate();
   });
   $("duration").addEventListener("input", scheduleEstimate);
+  $("download-format").addEventListener("change", updateDownload);
   const bind = (slider, output, digits) => {
     const update = () =>
       ($(output).textContent = Number($(slider).value).toFixed(digits));

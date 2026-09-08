@@ -80,6 +80,11 @@ class Settings:
     max_ref_audio_bytes: int = 25 * 1024 * 1024
     max_image_bytes: int = 5 * 1024 * 1024
 
+    # Qualität der MP3-Downloads und Obergrenze für /api/convert (die
+    # Oberfläche schickt dorthin das fertige WAV zum Umwandeln).
+    mp3_bitrate: str = "192k"
+    max_convert_bytes: int = 64 * 1024 * 1024
+
     # Verzeichnis der Stimm-Bibliothek (leer -> default_library_dir()).
     library_dir: str = ""
     # Wie viele berechnete Stimmen gleichzeitig im Arbeitsspeicher bleiben.
@@ -110,6 +115,8 @@ class Settings:
                 "OMNIVOICE_MAX_REF_AUDIO_BYTES", 25 * 1024 * 1024
             ),
             max_image_bytes=_env_int("OMNIVOICE_MAX_IMAGE_BYTES", 5 * 1024 * 1024),
+            mp3_bitrate=_env_str("OMNIVOICE_MP3_BITRATE", "192k"),
+            max_convert_bytes=_env_int("OMNIVOICE_MAX_CONVERT_BYTES", 64 * 1024 * 1024),
             library_dir=_env_str("OMNIVOICE_LIBRARY_DIR", default_library_dir()),
             voice_cache_size=_env_int("OMNIVOICE_VOICE_CACHE_SIZE", 8),
             timing_history_path=_env_str(

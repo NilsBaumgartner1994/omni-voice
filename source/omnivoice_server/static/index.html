@@ -176,9 +176,19 @@
         <audio id="output" controls></audio>
         <div class="row between">
           <small id="result-meta"></small>
-          <a id="download" download="omnivoice.wav" class="secondary">
-            ⬇ Herunterladen
-          </a>
+          <div class="row download-row">
+            <select
+              id="download-format"
+              class="inline-select"
+              aria-label="Dateiformat für den Download"
+            >
+              <option value="mp3">MP3</option>
+              <option value="wav">WAV</option>
+            </select>
+            <a id="download" download="omnivoice.mp3" class="secondary">
+              ⬇ Herunterladen
+            </a>
+          </div>
         </div>
       </section>
       <section id="library" class="card">

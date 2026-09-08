@@ -114,6 +114,12 @@ gesetzt (Voreinstellung), läuft das Ergebnis los, sobald es fertig ist. Wer bei
 Erzeugen nebenbei etwas anderes hört, nimmt den Haken weg – die Aufnahme landet
 trotzdem im Ergebnis-Player und im Download.
 
+Im Ergebnis steht neben „Herunterladen“ ein Auswahlfeld für das **Dateiformat**:
+**MP3** (Voreinstellung, rund zehnmal kleiner) oder **WAV** (unkomprimiert).
+Erzeugt wird immer WAV; das MP3 rechnet der Server einmal daraus um, eine zweite
+Synthese kostet es also nicht. Fehlt ffmpeg (nur außerhalb des Containers
+möglich), bleibt WAV als einzige Auswahl stehen.
+
 ### Die Stimm-Bibliothek
 
 Unten auf der Seite steht die Bibliothek als **Bilderleiste**: pro Person nur
@@ -224,7 +230,8 @@ passend zur Maschine und benutzt ansonsten exakt die Upstream-Oberfläche.
 | `GET` | `/api/info` | Gerät, dtype, Limits, Stimm-Eigenschaften |
 | `GET` | `/api/languages` | Liste der unterstützten Sprachen |
 | `GET` | `/api/estimate` | Dauerprognose für die angegebenen Einstellungen |
-| `POST` | `/api/tts` | Synthese, Antwort ist eine WAV-Datei |
+| `POST` | `/api/tts` | Synthese, Antwort ist eine WAV- oder MP3-Datei |
+| `POST` | `/api/convert` | fertiges WAV in ein anderes Format umrechnen (`audio`, `format`) |
 | `GET` | `/api/voices` | Stimm-Bibliothek auflisten (inkl. „berechnet?“) |
 | `POST` | `/api/voices` | Person anlegen (multipart: `name`, `ref_audio`, `ref_text`, `image`, …; `prepare=false` überspringt das Berechnen) |
 | `GET` `POST` `DELETE` | `/api/voices/{id}` | einzelne Person lesen, ändern, löschen |
@@ -260,7 +267,27 @@ curl -X POST http://localhost:7860/api/tts \
 
 Felder: `text` (Pflicht), `mode` (`auto` | `clone` | `design`), `voice_id`,
 `language`, `instruct`, `ref_audio`, `ref_text`, `num_step`, `guidance_scale`,
-`speed`, `duration`, `denoise`, `normalize_text`.
+`speed`, `duration`, `denoise`, `normalize_text`, `format`.
+
+`format` ist `wav` (Standard) oder `mp3`; die Bitrate steuert
+`OMNIVOICE_MP3_BITRATE`. Ein schon erzeugtes WAV lässt sich auch ohne neue
+Synthese umwandeln – genau das macht die Weboberfläche beim Herunterladen:
+
+```bash
+# gleich als MP3 erzeugen
+curl -X POST http://localhost:7860/api/tts \
+  -H 'content-type: application/json' \
+  -d '{"text": "Hallo!", "format": "mp3"}' \
+  -o hallo.mp3
+
+# oder ein vorhandenes WAV umwandeln
+curl -X POST http://localhost:7860/api/convert \
+  -F audio=@hallo.wav -F format=mp3 -o hallo.mp3
+```
+
+MP3 kodiert ffmpeg, das im Image enthalten ist. Fehlt es (Entwicklung ohne
+Docker), antwortet `format=mp3` mit `503`; `/api/info` listet unter
+`audio_formats` die tatsächlich verfügbaren Formate.
 
 Mit einer gespeicherten Person genügt deren `voice_id` – Referenzaufnahme und
 Referenztext kommen dann aus der Bibliothek:
@@ -313,6 +340,8 @@ den Standardwerten eingecheckt – dort anpassen, danach `docker compose up -d`:
 | `OMNIVOICE_LOAD_ASR` | `false` | Whisper für automatische Transkription laden |
 | `OMNIVOICE_ASR_MODEL` | `openai/whisper-large-v3-turbo` | verwendetes Whisper-Modell |
 | `OMNIVOICE_MAX_TEXT_CHARS` | `2000` | Längenlimit pro Anfrage |
+| `OMNIVOICE_MP3_BITRATE` | `192k` | Bitrate der MP3-Downloads |
+| `OMNIVOICE_MAX_CONVERT_BYTES` | `67108864` | Obergrenze für `/api/convert` |
 | `OMNIVOICE_ENGINE` | `omnivoice` | `dummy` = Testton ohne Modell |
 | `OMNIVOICE_MODELS_PATH` | `./models` | Ordner für die Modellgewichte |
 | `OMNIVOICE_DATA_PATH` | `./data` | Ordner für die Stimm-Bibliothek |
@@ -418,6 +447,32 @@ mehrere GB herunterzuladen.
 
 ---
 
+## Branch-Regeln für `main` (Auto-Merge)
+
+In `.github/rulesets/main-auto-merge.json` liegt ein fertiges **Ruleset**, mit
+dem Pull Requests automatisch nach `main` gemergt werden können, sobald die CI
+grün ist. Es verlangt einen Pull Request (aber **kein** Review), die drei
+CI-Checks und verbietet Löschen und Force-Push; Repository-Admins dürfen die
+Regeln umgehen.
+
+Einrichten:
+
+1. **Settings → General → Pull Requests → „Allow auto-merge“** anhaken. Ohne
+   diese Option gibt es den Knopf „Enable auto-merge“ im Pull Request nicht –
+   das Ruleset allein schaltet ihn nicht frei.
+2. **Settings → Rules → Rulesets → New ruleset → Import a ruleset** und die
+   Datei hochladen. (Alternativ per API:
+   `gh api repos/:owner/:repo/rulesets --input .github/rulesets/main-auto-merge.json`)
+3. Im Pull Request „Enable auto-merge“ klicken – GitHub merged, sobald alle
+   Pflicht-Checks bestanden sind.
+
+Die Pflicht-Checks heißen genauso wie die Jobs in
+`.github/workflows/ci.yml` (`Tests (ohne Modell)`, `Compose-Dateien prüfen`,
+`Image bauen + Smoke-Test`). Wer Jobs umbenennt, muss sie auch im Ruleset
+umbenennen – sonst wartet Auto-Merge auf einen Check, den es nicht mehr gibt.
+
+---
+
 ## Aufbau des Repositories
 
 ```
@@ -430,11 +485,14 @@ source/                    Alles, was den Server ausmacht (Build-Context)
   Dockerfile               CPU-Image (Build-Args für CUDA)
   docker/entrypoint.sh     serve | gradio | prefetch | infer | shell
   omnivoice_server/        FastAPI-Server, Weboberfläche, Dauerprognose
+    audio.py               Ausgabeformate: WAV (stdlib) und MP3 (ffmpeg)
     library.py             Stimm-Bibliothek (Quelldaten, kennt kein Modell)
     engine.py              Modell-Anbindung (kennt keine Bibliothek)
     voices.py              Brücke: berechnet und findet Stimmen je Modell
   scripts/                 Modell-Prefetch und Smoke-Test
   tests/                   Tests ohne Modellgewichte
+
+.github/rulesets/          Branch-Regeln für main (importierbar, siehe unten)
 
 models/                    Modellgewichte (Inhalt nicht eingecheckt)
 data/voices/               Stimm-Bibliothek (Inhalt nicht eingecheckt)

@@ -26,6 +26,8 @@ services:
       OMNIVOICE_LOAD_ASR: ${OMNIVOICE_LOAD_ASR:-false}
       OMNIVOICE_ASR_MODEL: ${OMNIVOICE_ASR_MODEL:-openai/whisper-large-v3-turbo}
       OMNIVOICE_MAX_TEXT_CHARS: ${OMNIVOICE_MAX_TEXT_CHARS:-2000}
+      # Qualität der MP3-Downloads (ffmpeg ist im Image enthalten).
+      OMNIVOICE_MP3_BITRATE: ${OMNIVOICE_MP3_BITRATE:-192k}
       # Wo die Personen/Stimmen liegen (im Container-Pfad des Daten-Volumes).
       OMNIVOICE_LIBRARY_DIR: ${OMNIVOICE_LIBRARY_DIR:-/data/voices}
       # Optionaler Hugging-Face-Spiegel, falls huggingface.co blockiert ist.
