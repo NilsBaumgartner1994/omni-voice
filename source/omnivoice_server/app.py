@@ -26,6 +26,8 @@ from .audio import (
 )
 from .config import Settings, default_library_dir, default_youtube_cache_dir
 from .engine import BaseEngine, SynthesisError, SynthesisRequest, build_engine
+from .i18n import catalogue as i18n_catalogue
+from .i18n import resolve_locale
 from .imagesearch import ImageSearch, ImageSearchError, browser_search_urls
 from .library import (
     ALLOWED_AUDIO_SUFFIXES,
@@ -173,6 +175,12 @@ def create_app(
             os.path.join(STATIC_DIR, "app.js"), media_type="text/javascript"
         )
 
+    @app.get("/i18n.js", include_in_schema=False)
+    def i18n_js() -> FileResponse:
+        return FileResponse(
+            os.path.join(STATIC_DIR, "i18n.js"), media_type="text/javascript"
+        )
+
     @app.get("/style.css", include_in_schema=False)
     def app_css() -> FileResponse:
         return FileResponse(
@@ -225,6 +233,20 @@ def create_app(
     def languages() -> dict[str, Any]:
         names = engine.languages()
         return {"count": len(names), "languages": names}
+
+    # -- Oberflächensprache ----------------------------------------------
+    @app.get("/api/i18n")
+    def i18n(request: Request, locale: str | None = None) -> dict[str, Any]:
+        """Texte und Klangeffekte in der gewünschten Sprache.
+
+        Ohne ``?locale=`` entscheidet der ``Accept-Language``-Header des
+        Browsers, sonst Deutsch. Die Klangeffekte kommen alphabetisch nach
+        ihrer Übersetzung zurück, damit die Oberfläche sie nur noch anzeigen
+        muss.
+        """
+
+        wanted = resolve_locale(locale, request.headers.get("accept-language"))
+        return i18n_catalogue(wanted)
 
     # -- duration forecast -----------------------------------------------
     @app.get("/api/estimate")

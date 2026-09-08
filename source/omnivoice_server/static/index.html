@@ -46,8 +46,25 @@
         ></textarea>
         <div class="row between">
           <small id="charcount">0 Zeichen</small>
-          <small>Steuerzeichen wie <code>[laughter]</code> sind erlaubt.</small>
+          <!-- Klangeffekte wie [laughter]: Beschriftung und Reihenfolge
+               kommen übersetzt vom Server (/api/i18n). -->
+          <select
+            id="sound-tag"
+            class="inline-select"
+            data-i18n-aria="sound_tags.label"
+            aria-label="Klangeffekt einfügen"
+            hidden
+          >
+            <option value="" data-i18n="sound_tags.placeholder">
+              – Klangeffekt einfügen –
+            </option>
+          </select>
         </div>
+        <small id="sound-tag-hint" class="hint" data-i18n="sound_tags.hint" hidden>
+          Der gewählte Effekt wird an der Cursorposition in den Text
+          geschrieben. Steuerzeichen wie [laughter] dürfen auch von Hand
+          getippt werden.
+        </small>
 
         <label for="language">Sprache</label>
         <select id="language">
@@ -383,6 +400,7 @@
       <a href="/docs">API-Dokumentation</a>
     </footer>
 
+    <script src="/i18n.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

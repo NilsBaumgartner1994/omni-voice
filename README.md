@@ -124,6 +124,29 @@ Erzeugt wird immer WAV; das MP3 rechnet der Server einmal daraus um, eine zweite
 Synthese kostet es also nicht. Fehlt ffmpeg (nur außerhalb des Containers
 möglich), bleibt WAV als einzige Auswahl stehen.
 
+### Klangeffekte einfügen
+
+Unter dem Textfeld steht ein Auswahlfeld **„Klangeffekt einfügen“** mit allen
+Steuerzeichen, die das Modell versteht – jeweils mit Übersetzung davor, also
+z. B. `Lachen [laughter]`. Die gewählte Zeile wird an der Cursorposition in den
+Text geschrieben (mit Leerzeichen drumherum, falls nötig); danach steht wieder
+der Platzhalter oben, sodass sich derselbe Effekt gleich noch einmal einfügen
+lässt. Von Hand getippte Steuerzeichen funktionieren weiterhin.
+
+Unterstützt werden: `[laughter]`, `[sigh]`, `[confirmation-en]`,
+`[question-en]`, `[question-ah]`, `[question-oh]`, `[question-ei]`,
+`[question-yi]`, `[surprise-ah]`, `[surprise-oh]`, `[surprise-wa]`,
+`[surprise-yo]` und `[dissatisfaction-hnn]`.
+
+Die Liste ist **alphabetisch nach der Übersetzung** sortiert – also in jeder
+Sprache anders (Umlaute zählen dabei wie ihr Grundbuchstabe: „Überraschung“
+steht zwischen „Seufzen“ und „Unmut“). Welche Sprache gilt, entscheidet der
+Browser (`Accept-Language`); ohne passende Übersetzung bleibt es bei
+**Deutsch**. Alle Texte dazu stehen in `source/omnivoice_server/i18n.py`; eine
+weitere Sprache ist dort ein zusätzlicher Eintrag in `TRANSLATIONS` – fehlende
+Schlüssel fallen automatisch auf Deutsch zurück. Die Oberfläche holt sie über
+`GET /api/i18n` (Beschriftungen fertig übersetzt und fertig sortiert).
+
 ### Die Stimm-Bibliothek
 
 Unten auf der Seite steht die Bibliothek als **Bilderleiste**: pro Person nur
@@ -265,6 +288,7 @@ passend zur Maschine und benutzt ansonsten exakt die Upstream-Oberfläche.
 | `GET` | `/api/health` | Ladezustand (`200` = bereit, `503` = lädt noch) |
 | `GET` | `/api/info` | Gerät, dtype, Limits, Stimm-Eigenschaften |
 | `GET` | `/api/languages` | Liste der unterstützten Sprachen |
+| `GET` | `/api/i18n` | Texte der Oberfläche und Klangeffekte (`?locale=de\|en`, sonst `Accept-Language`) |
 | `GET` | `/api/estimate` | Dauerprognose für die angegebenen Einstellungen |
 | `POST` | `/api/tts` | Synthese, Antwort ist eine WAV- oder MP3-Datei |
 | `POST` | `/api/convert` | fertiges WAV in ein anderes Format umrechnen (`audio`, `format`) |
@@ -567,6 +591,7 @@ source/                    Alles, was den Server ausmacht (Build-Context)
   Dockerfile               CPU-Image (Build-Args für CUDA)
   docker/entrypoint.sh     serve | gradio | prefetch | infer | shell
   omnivoice_server/        FastAPI-Server, Weboberfläche, Dauerprognose
+    i18n.py                Übersetzungen (Vorgabe Deutsch) und Klangeffekte
     audio.py               Ausgabeformate: WAV (stdlib) und MP3 (ffmpeg)
     youtube.py             Referenzaufnahme aus einem YouTube-Video (yt-dlp)
     imagesearch.py         Bild zum Namen (Wikipedia/Wikimedia Commons)
