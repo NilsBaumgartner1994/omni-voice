@@ -246,6 +246,7 @@ mehrere GB herunterzuladen.
 | Container wird mit Exit 137 beendet | Zu wenig RAM für Docker – Limit in Docker Desktop erhöhen |
 | „Ohne Referenztext wird ein Whisper-ASR-Modell benötigt …“ | Referenztext eintragen oder `OMNIVOICE_LOAD_ASR=true` setzen |
 | Download bricht ab / hängt | `HF_ENDPOINT=https://hf-mirror.com` in die `.env` |
+| „Fehler beim Laden“ + `UnsupportedProtocol: Request URL is missing an 'http://' …` | `HF_ENDPOINT` ist leer gesetzt. Zeile aus der `.env` entfernen oder auf eine vollständige URL setzen, danach `docker compose up -d` |
 | Port 7860 belegt | `OMNIVOICE_PORT=8080` in die `.env` |
 | Healthcheck bleibt „starting“ | Normal, solange Gewichte geladen werden (Startphase: 30 Minuten) |
 

@@ -24,7 +24,10 @@ services:
       OMNIVOICE_ASR_MODEL: ${OMNIVOICE_ASR_MODEL:-openai/whisper-large-v3-turbo}
       OMNIVOICE_MAX_TEXT_CHARS: ${OMNIVOICE_MAX_TEXT_CHARS:-2000}
       # Optionaler Hugging-Face-Spiegel, falls huggingface.co blockiert ist.
-      HF_ENDPOINT: ${HF_ENDPOINT:-}
+      # Achtung: hier muss ein echter Standardwert stehen. Ein leerer Wert wird
+      # von Compose als gesetztes HF_ENDPOINT="" in den Container gereicht und
+      # huggingface_hub baut damit URLs ohne Schema ("UnsupportedProtocol").
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
       # Nach `prefetch` auf 1 setzen für vollständig offline Betrieb.
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-}
       # Threads für die CPU-Inferenz (leer = alle Kerne).
