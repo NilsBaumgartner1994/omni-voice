@@ -169,10 +169,13 @@ def test_a_generation_feeds_the_estimate(client: TestClient) -> None:
     assert body["samples"] == 1
     assert body["history"]["count"] == 1
 
-    # Twice the text is expected to take about twice as long.
+    # Twice the text is expected to take about twice as long. The API rounds
+    # to two decimals, which is up to 0.01 s off on the sub-second runtimes of
+    # the dummy engine -- the exact scaling is checked on the raw estimate in
+    # test_estimate_scales_a_single_previous_run.
     longer = client.get("/api/estimate", params={"text_chars": 2 * len(text)}).json()
     assert longer["estimate_seconds"] == pytest.approx(
-        2 * body["estimate_seconds"], rel=0.01
+        2 * body["estimate_seconds"], rel=0.05, abs=0.02
     )
 
     assert client.get("/api/info").json()["timing_history"]["count"] == 1
