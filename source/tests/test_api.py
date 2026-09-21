@@ -8,9 +8,14 @@ import wave
 import pytest
 from fastapi.testclient import TestClient
 
+from omnivoice_server import audio
 from omnivoice_server.app import create_app
 from omnivoice_server.config import Settings
 from omnivoice_server.engine import DummyEngine, OmniVoiceEngine, build_engine
+
+needs_ffmpeg = pytest.mark.skipif(
+    not audio.mp3_supported(), reason="ffmpeg ist hier nicht installiert"
+)
 
 
 @pytest.fixture()
@@ -26,6 +31,17 @@ def client() -> TestClient:
 def _wav_seconds(payload: bytes) -> float:
     with wave.open(io.BytesIO(payload)) as handle:
         return handle.getnframes() / handle.getframerate()
+
+
+def _wav(seconds: float) -> bytes:
+    """Stille WAV-Datei mit bekannter Länge (16 kHz, mono, 16 Bit)."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(b"\0\0" * int(seconds * 16000))
+    return buffer.getvalue()
 
 
 def test_index_and_assets(client: TestClient) -> None:
@@ -193,3 +209,76 @@ def test_oversized_reference_audio_is_rejected() -> None:
             files={"ref_audio": ("big.wav", b"\0" * 4096, "audio/wav")},
         )
     assert response.status_code == 413
+
+
+@needs_ffmpeg
+def test_overlong_reference_audio_is_trimmed_before_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 30 s Referenz mit Transkript gehen sonst ungekürzt ins Modell und werfen
+    # den Container auf einer CPU aus dem Speicher (Exit 137).
+    settings = Settings(engine="dummy", max_ref_audio_seconds=10)
+    engine = DummyEngine(settings)
+    engine.load()
+    seen: list[float] = []
+    original = engine.synthesize
+
+    def spy(request):
+        seen.append(_wav_seconds(open(request.ref_audio_path, "rb").read()))
+        return original(request)
+
+    monkeypatch.setattr(engine, "synthesize", spy)
+    app = create_app(settings, engine=engine, load_on_startup=False)
+    with TestClient(app) as test_client:
+        response = test_client.post(
+            "/api/tts",
+            data={"text": "hi", "mode": "clone", "ref_text": "hi"},
+            files={"ref_audio": ("lang.wav", _wav(seconds=30.0), "audio/wav")},
+        )
+        assert response.status_code == 200, response.text
+        assert seen[-1] == pytest.approx(10.0, abs=0.05), "auf die Grenze gekürzt"
+
+        # Ein gewünschter Ausschnitt wird genau so geschnitten.
+        response = test_client.post(
+            "/api/tts",
+            data={
+                "text": "hi",
+                "mode": "clone",
+                "ref_text": "hi",
+                "ref_start": "3",
+                "ref_end": "7.5",
+            },
+            files={"ref_audio": ("lang.wav", _wav(seconds=30.0), "audio/wav")},
+        )
+        assert response.status_code == 200, response.text
+        assert seen[-1] == pytest.approx(4.5, abs=0.05)
+
+        bad = test_client.post(
+            "/api/tts",
+            data={"text": "hi", "mode": "clone", "ref_start": "9", "ref_end": "2"},
+            files={"ref_audio": ("lang.wav", _wav(seconds=30.0), "audio/wav")},
+        )
+        assert bad.status_code == 422
+        assert (
+            test_client.get("/api/info").json()["limits"]["max_ref_audio_seconds"] == 10
+        )
+
+
+def test_overlong_reference_audio_is_rejected_without_ffmpeg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Ohne ffmpeg lässt sich nicht schneiden -- dann lieber eine klare
+    # Meldung als ein abgeschossener Container.
+    monkeypatch.setattr(audio, "ffmpeg_binary", lambda: None)
+    settings = Settings(engine="dummy", max_ref_audio_seconds=10)
+    engine = DummyEngine(settings)
+    engine.load()
+    app = create_app(settings, engine=engine, load_on_startup=False)
+    with TestClient(app) as test_client:
+        response = test_client.post(
+            "/api/tts",
+            data={"text": "hi", "mode": "clone", "ref_text": "hi"},
+            files={"ref_audio": ("lang.wav", _wav(seconds=30.0), "audio/wav")},
+        )
+    assert response.status_code == 422
+    assert "ffmpeg" in response.json()["detail"]

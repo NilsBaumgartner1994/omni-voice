@@ -230,10 +230,12 @@
             </button>
           </div>
 
-          <div id="voice-current" hidden>
+          <div id="voice-current" class="voice-current" hidden>
             <label for="voice-audio-current">Hinterlegte Referenzaufnahme</label>
-            <audio id="voice-audio-current" controls preload="none"></audio>
+            <audio id="voice-audio-current" controls preload="metadata"></audio>
+            <small id="voice-audio-info" class="hint"></small>
             <small id="voice-source" class="hint" hidden></small>
+            <small id="voice-trim-note" class="hint warn" hidden></small>
           </div>
 
           <form id="voice-form">
@@ -277,7 +279,38 @@
 
             <div id="voice-source-file">
               <input id="voice-audio" type="file" accept="audio/*" />
-              <audio id="voice-audio-preview" controls hidden></audio>
+              <small id="file-hint" class="hint"></small>
+              <div id="file-result" hidden>
+                <audio id="file-audio" controls preload="metadata"></audio>
+                <div class="row yt-range">
+                  <button id="file-set-start" type="button" class="secondary">
+                    ⏱ Start hier
+                  </button>
+                  <input
+                    id="file-start"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value="0"
+                    aria-label="Startzeit in Sekunden"
+                  />
+                  <button id="file-set-end" type="button" class="secondary">
+                    ⏱ Ende hier
+                  </button>
+                  <input
+                    id="file-end"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value="0"
+                    aria-label="Endzeit in Sekunden"
+                  />
+                  <button id="file-play-range" type="button" class="secondary">
+                    ▶ Ausschnitt anhören
+                  </button>
+                </div>
+                <small id="file-range-hint" class="hint"></small>
+              </div>
             </div>
 
             <div id="voice-source-youtube" hidden>

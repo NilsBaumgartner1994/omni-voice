@@ -14,9 +14,11 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from .wav import encode_wav, to_pcm16
 
@@ -52,6 +54,19 @@ FORMATS: dict[str, AudioFormat] = {
     "wav": AudioFormat("wav", "WAV", "audio/wav", ".wav"),
 }
 
+# Medientypen der Referenzaufnahmen (die Bibliothek kennt zusätzlich Bilder).
+AUDIO_MEDIA_TYPES = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".webm": "audio/webm",
+    ".opus": "audio/opus",
+    ".aac": "audio/aac",
+}
+
+
 # Was `/api/tts` ohne `format` liefert: WAV, wie bisher.
 API_DEFAULT_FORMAT = "wav"
 
@@ -60,6 +75,73 @@ def ffmpeg_binary() -> str | None:
     """Pfad zu ffmpeg -- oder ``None``, wenn es hier keins gibt."""
     override = os.environ.get("OMNIVOICE_FFMPEG", "").strip()
     return shutil.which(override or "ffmpeg")
+
+
+def ffprobe_binary() -> str | None:
+    """Pfad zu ffprobe (liegt neben ffmpeg) -- oder ``None``."""
+    override = os.environ.get("OMNIVOICE_FFPROBE", "").strip()
+    if override:
+        return shutil.which(override)
+    ffmpeg = ffmpeg_binary()
+    if ffmpeg:
+        sibling = os.path.join(os.path.dirname(ffmpeg), "ffprobe")
+        if os.access(sibling, os.X_OK):
+            return sibling
+    return shutil.which("ffprobe")
+
+
+def probe_duration(path: str) -> float | None:
+    """Länge einer Audiodatei in Sekunden -- ``None``, wenn nicht feststellbar.
+
+    WAV liest die Standardbibliothek, alles andere fragt ffprobe. Ohne
+    ffprobe (Entwicklung ohne Docker) bleibt die Länge von mp3/m4a/ogg
+    unbekannt; der Aufrufer prüft dann eben nicht.
+    """
+    try:
+        with wave.open(path) as handle:
+            rate = handle.getframerate()
+            if rate > 0:
+                return handle.getnframes() / rate
+    except (wave.Error, EOFError, ValueError, OSError):
+        pass
+    binary = ffprobe_binary()
+    if binary is None:
+        return None
+    command = [
+        binary,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        seconds = float(result.stdout.decode("ascii", "replace").strip())
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None
+
+
+def reference_too_long(seconds: float, limit: int) -> str:
+    """Meldung, wenn eine Referenzaufnahme länger ist als erlaubt.
+
+    Lange Referenzen bringen dem Klonen nichts, brauchen aber ein Vielfaches
+    an Arbeitsspeicher -- auf einer CPU reicht eine halbe Minute, um den
+    Container zu sprengen (Exit 137). Deshalb wird vor dem Modell abgebrochen.
+    """
+    return (
+        f"Das Referenz-Audio ist {seconds:.1f} Sekunden lang, erlaubt sind "
+        f"höchstens {limit} Sekunden. Bitte einen kürzeren Ausschnitt "
+        "wählen (3–10 Sekunden reichen zum Klonen)."
+    )
 
 
 def mp3_supported() -> bool:
@@ -126,18 +208,25 @@ def wav_to_mp3(payload: bytes, *, bitrate: str = "192k") -> bytes:
     return _encode_mp3(frames, rate, bitrate=bitrate, channels=channels)
 
 
-def clip_to_mp3(
-    path: str, *, start: float, seconds: float, bitrate: str = "192k"
+def clip_audio(
+    path: str,
+    *,
+    start: float,
+    seconds: float,
+    audio_format: str = "wav",
+    bitrate: str = "192k",
 ) -> bytes:
-    """Einen Ausschnitt einer vorhandenen Audiodatei als MP3 herausschneiden.
+    """Einen Ausschnitt einer vorhandenen Audiodatei herausschneiden.
 
     Gebraucht wird das für Referenzaufnahmen aus einem längeren Mitschnitt
-    (etwa der Tonspur eines YouTube-Videos): ffmpeg dekodiert nur den
-    gewünschten Bereich und kodiert ihn einkanalig neu.
+    (Tonspur eines YouTube-Videos, zu lange hochgeladene Datei): ffmpeg
+    dekodiert nur den gewünschten Bereich und schreibt ihn einkanalig neu --
+    als WAV (verlustfrei, Standard) oder MP3 (klein, für YouTube-Tonspuren).
     """
     if seconds <= 0:
         raise AudioEncodeError("Der Ausschnitt hat keine Länge.")
-    if not _BITRATE_RE.match(bitrate or ""):
+    key = normalize_format(audio_format)
+    if key == "mp3" and not _BITRATE_RE.match(bitrate or ""):
         raise AudioEncodeError(f"Ungültige MP3-Bitrate: {bitrate!r}")
     binary = ffmpeg_binary()
     if binary is None:
@@ -160,27 +249,165 @@ def clip_to_mp3(
         "-vn",
         "-ac",
         "1",
-        "-f",
-        "mp3",
-        "-b:a",
-        bitrate,
-        "pipe:1",
     ]
+    # MP3 kann durch die Pipe; WAV nicht: den RIFF-Header mit den Längen
+    # schreibt ffmpeg erst zum Schluss und dafür muss es zurückspringen.
+    target = "pipe:1"
+    tmp_out = None
+    if key == "mp3":
+        command += ["-f", "mp3", "-b:a", bitrate]
+    else:
+        fd, tmp_out = tempfile.mkstemp(suffix=".wav", prefix="omnivoice-cut-")
+        os.close(fd)
+        target = tmp_out
+        command += ["-f", "wav", "-c:a", "pcm_s16le", "-y"]
+    command.append(target)
     try:
-        result = subprocess.run(
-            command, capture_output=True, timeout=FFMPEG_TIMEOUT_SECONDS
+        try:
+            result = subprocess.run(
+                command, capture_output=True, timeout=FFMPEG_TIMEOUT_SECONDS
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AudioEncodeError("ffmpeg hat zu lange gebraucht.") from exc
+        except OSError as exc:
+            raise AudioEncodeError(f"ffmpeg ließ sich nicht starten: {exc}") from exc
+        payload = result.stdout
+        if result.returncode == 0 and tmp_out is not None:
+            with open(tmp_out, "rb") as handle:
+                payload = handle.read()
+        if result.returncode != 0 or not payload:
+            detail = result.stderr.decode("utf-8", "replace").strip().splitlines()
+            reason = detail[-1] if detail else f"Rückgabewert {result.returncode}"
+            raise AudioEncodeError(
+                f"ffmpeg konnte den Ausschnitt nicht schneiden: {reason}"
+            )
+    finally:
+        if tmp_out is not None:
+            try:
+                os.unlink(tmp_out)
+            except OSError:
+                pass
+    return payload
+
+
+def clip_to_mp3(
+    path: str, *, start: float, seconds: float, bitrate: str = "192k"
+) -> bytes:
+    """Ausschnitt als MP3 (siehe :func:`clip_audio`)."""
+    return clip_audio(
+        path, start=start, seconds=seconds, audio_format="mp3", bitrate=bitrate
+    )
+
+
+@dataclass(frozen=True)
+class ReferenceCut:
+    """Ergebnis von :func:`fit_reference`: die Aufnahme, wie sie ins Modell geht."""
+
+    data: bytes
+    suffix: str
+    media_type: str
+    # Länge der Aufnahme vorher/nachher (None: nicht feststellbar).
+    original_seconds: float | None
+    seconds: float | None
+    # Der herausgeschnittene Bereich der Originaldatei.
+    start: float
+    end: float | None
+    # Wurde überhaupt geschnitten -- und falls ja, nur wegen der Obergrenze
+    # (statt auf Wunsch)?
+    cut: bool
+    auto_trimmed: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "original_seconds": (
+                round(self.original_seconds, 2)
+                if self.original_seconds is not None
+                else None
+            ),
+            "seconds": round(self.seconds, 2) if self.seconds is not None else None,
+            "start": round(self.start, 2),
+            "end": round(self.end, 2) if self.end is not None else None,
+            "cut": self.cut,
+            "auto_trimmed": self.auto_trimmed,
+        }
+
+
+def fit_reference(
+    data: bytes,
+    suffix: str,
+    *,
+    start: float = 0.0,
+    end: float | None = None,
+    max_seconds: int = 0,
+) -> ReferenceCut:
+    """Eine hochgeladene Referenzaufnahme zurechtschneiden.
+
+    Gewünscht ist der Bereich ``start``..``end`` (Sekunden; ohne ``end`` bis
+    zum Schluss). Ist er -- oder ohne Wunsch die ganze Datei -- länger als
+    ``max_seconds``, wird auf die Obergrenze gekürzt statt abgewiesen: lange
+    Referenzen bringen dem Klonen nichts, sprengen aber auf einer CPU den
+    Speicher. Geschnitten wird als WAV, sonst bleibt die Datei unangetastet.
+    """
+    start = max(0.0, float(start or 0.0))
+    end_value = float(end) if end is not None else None
+    if end_value is not None and end_value <= start:
+        raise AudioEncodeError("Das Ende des Ausschnitts muss hinter dem Start liegen.")
+
+    fd, tmp = tempfile.mkstemp(suffix=suffix or ".bin", prefix="omnivoice-ref-")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        total = probe_duration(tmp)
+
+        if total is not None and end_value is not None:
+            end_value = min(end_value, total)
+        wanted = start > 0 or (
+            end_value is not None and (total is None or end_value < total - 0.05)
         )
-    except subprocess.TimeoutExpired as exc:
-        raise AudioEncodeError("ffmpeg hat zu lange gebraucht.") from exc
-    except OSError as exc:
-        raise AudioEncodeError(f"ffmpeg ließ sich nicht starten: {exc}") from exc
-    if result.returncode != 0 or not result.stdout:
-        detail = result.stderr.decode("utf-8", "replace").strip().splitlines()
-        reason = detail[-1] if detail else f"Rückgabewert {result.returncode}"
-        raise AudioEncodeError(
-            f"ffmpeg konnte den Ausschnitt nicht schneiden: {reason}"
-        )
-    return result.stdout
+        length = end_value if end_value is not None else total
+        if length is not None:
+            length -= start
+        auto = False
+        if max_seconds > 0 and length is not None and length > max_seconds:
+            length = float(max_seconds)
+            end_value = start + length
+            auto = not wanted
+        elif max_seconds > 0 and length is None and not wanted:
+            # Länge unbekannt (kein ffprobe): lieber unangetastet lassen als
+            # blind schneiden -- die Bibliothek prüft dann eben nicht.
+            length = None
+
+        if not wanted and not auto:
+            return ReferenceCut(
+                data=data,
+                suffix=suffix,
+                media_type=AUDIO_MEDIA_TYPES.get(suffix, "application/octet-stream"),
+                original_seconds=total,
+                seconds=total,
+                start=0.0,
+                end=total,
+                cut=False,
+                auto_trimmed=False,
+            )
+        if length is None or length <= 0:
+            raise AudioEncodeError("Der Ausschnitt liegt außerhalb der Aufnahme.")
+        payload = clip_audio(tmp, start=start, seconds=length, audio_format="wav")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    return ReferenceCut(
+        data=payload,
+        suffix=".wav",
+        media_type="audio/wav",
+        original_seconds=total,
+        seconds=length,
+        start=start,
+        end=start + length,
+        cut=True,
+        auto_trimmed=auto,
+    )
 
 
 def _encode_mp3(

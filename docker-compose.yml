@@ -26,6 +26,10 @@ services:
       OMNIVOICE_LOAD_ASR: ${OMNIVOICE_LOAD_ASR:-false}
       OMNIVOICE_ASR_MODEL: ${OMNIVOICE_ASR_MODEL:-openai/whisper-large-v3-turbo}
       OMNIVOICE_MAX_TEXT_CHARS: ${OMNIVOICE_MAX_TEXT_CHARS:-2000}
+      # Längere Referenzaufnahmen sprengen auf einer CPU den Speicher
+      # (Container-Exit 137); zum Klonen reichen 3-10 s. Was länger ist,
+      # wird vor dem Modell zugeschnitten. 0 = nicht zuschneiden.
+      OMNIVOICE_MAX_REF_AUDIO_SECONDS: ${OMNIVOICE_MAX_REF_AUDIO_SECONDS:-20}
       # Qualität der MP3-Downloads (ffmpeg ist im Image enthalten).
       OMNIVOICE_MP3_BITRATE: ${OMNIVOICE_MP3_BITRATE:-192k}
       # Wo die Personen/Stimmen liegen (im Container-Pfad des Daten-Volumes).
@@ -34,7 +38,7 @@ services:
       OMNIVOICE_YOUTUBE: ${OMNIVOICE_YOUTUBE:-true}
       OMNIVOICE_YOUTUBE_CACHE_DIR: ${OMNIVOICE_YOUTUBE_CACHE_DIR:-/data/youtube-cache}
       OMNIVOICE_YOUTUBE_MAX_VIDEO_SECONDS: ${OMNIVOICE_YOUTUBE_MAX_VIDEO_SECONDS:-3600}
-      OMNIVOICE_YOUTUBE_MAX_CLIP_SECONDS: ${OMNIVOICE_YOUTUBE_MAX_CLIP_SECONDS:-120}
+      OMNIVOICE_YOUTUBE_MAX_CLIP_SECONDS: ${OMNIVOICE_YOUTUBE_MAX_CLIP_SECONDS:-20}
       # Bildersuche zum Namen (Wikipedia/Wikimedia Commons, ohne Schlüssel).
       OMNIVOICE_IMAGE_SEARCH: ${OMNIVOICE_IMAGE_SEARCH:-true}
       OMNIVOICE_IMAGE_SEARCH_LANGUAGE: ${OMNIVOICE_IMAGE_SEARCH_LANGUAGE:-de}

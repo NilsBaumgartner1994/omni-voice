@@ -92,6 +92,12 @@ class Settings:
     # Upper bounds so a single browser tab cannot lock up a laptop.
     max_text_chars: int = 2000
     max_ref_audio_bytes: int = 25 * 1024 * 1024
+    # Länge der Referenzaufnahme. OmniVoice empfiehlt 3-10 s und kürzt
+    # längere Aufnahmen nur ohne Referenztext selbst; mit Transkript gehen
+    # 30 s ungekürzt in den Tokenizer -- auf einer CPU reicht das, um den
+    # Container zu sprengen (Exit 137). Längere Uploads schneidet die API
+    # deshalb vorher zu (siehe audio.fit_reference). 0 = nicht zuschneiden.
+    max_ref_audio_seconds: int = 20
     max_image_bytes: int = 5 * 1024 * 1024
 
     # Qualität der MP3-Downloads und Obergrenze für /api/convert (die
@@ -112,9 +118,10 @@ class Settings:
     youtube_cache_dir: str = ""
     youtube_cache_entries: int = 5
     # Obergrenzen: ein ganzer Kinofilm muss nicht geladen werden, und als
-    # Referenz reichen wenige Sekunden.
+    # Referenz reichen wenige Sekunden (wirksam ist zusätzlich höchstens
+    # max_ref_audio_seconds).
     youtube_max_video_seconds: int = 3600
-    youtube_max_clip_seconds: int = 120
+    youtube_max_clip_seconds: int = 20
     youtube_timeout_seconds: int = 600
 
     # Bildersuche zum Namen (Wikipedia/Wikimedia Commons, ohne Schlüssel).
@@ -145,6 +152,7 @@ class Settings:
             max_ref_audio_bytes=_env_int(
                 "OMNIVOICE_MAX_REF_AUDIO_BYTES", 25 * 1024 * 1024
             ),
+            max_ref_audio_seconds=_env_int("OMNIVOICE_MAX_REF_AUDIO_SECONDS", 20),
             max_image_bytes=_env_int("OMNIVOICE_MAX_IMAGE_BYTES", 5 * 1024 * 1024),
             mp3_bitrate=_env_str("OMNIVOICE_MP3_BITRATE", "192k"),
             max_convert_bytes=_env_int("OMNIVOICE_MAX_CONVERT_BYTES", 64 * 1024 * 1024),
@@ -159,9 +167,7 @@ class Settings:
             youtube_max_video_seconds=_env_int(
                 "OMNIVOICE_YOUTUBE_MAX_VIDEO_SECONDS", 3600
             ),
-            youtube_max_clip_seconds=_env_int(
-                "OMNIVOICE_YOUTUBE_MAX_CLIP_SECONDS", 120
-            ),
+            youtube_max_clip_seconds=_env_int("OMNIVOICE_YOUTUBE_MAX_CLIP_SECONDS", 20),
             youtube_timeout_seconds=_env_int("OMNIVOICE_YOUTUBE_TIMEOUT", 600),
             image_search_enabled=_env_bool("OMNIVOICE_IMAGE_SEARCH", True),
             image_search_language=_env_str("OMNIVOICE_IMAGE_SEARCH_LANGUAGE", "de"),

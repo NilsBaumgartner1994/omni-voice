@@ -20,6 +20,7 @@ from .audio import (
     available_formats,
     default_download_format,
     encode,
+    fit_reference,
     mp3_supported,
     normalize_format,
     wav_to_mp3,
@@ -67,6 +68,11 @@ def _as_int(value: Any, default: int) -> int:
     return int(round(_as_float(value, float(default))))
 
 
+def _optional_float(value: Any) -> float | None:
+    """Zahl oder ``None``, wenn das Feld leer ist."""
+    return _as_float(value, 0.0) if _clean(value) else None
+
+
 def _as_bool(value: Any, default: bool) -> bool:
     if value is None or value == "":
         return default
@@ -111,11 +117,17 @@ def create_app(
         settings.library_dir or default_library_dir(),
         max_audio_bytes=settings.max_ref_audio_bytes,
         max_image_bytes=settings.max_image_bytes,
+        max_audio_seconds=settings.max_ref_audio_seconds,
     )
+    # Ein YouTube-Ausschnitt ist eine Referenzaufnahme wie jede andere und
+    # darf deshalb nicht länger sein als die.
+    max_clip_seconds = settings.youtube_max_clip_seconds
+    if settings.max_ref_audio_seconds > 0:
+        max_clip_seconds = min(max_clip_seconds, settings.max_ref_audio_seconds)
     youtube = youtube or YouTubeService(
         settings.youtube_cache_dir or default_youtube_cache_dir(),
         max_video_seconds=settings.youtube_max_video_seconds,
-        max_clip_seconds=settings.youtube_max_clip_seconds,
+        max_clip_seconds=max_clip_seconds,
         cache_entries=settings.youtube_cache_entries,
         timeout_seconds=settings.youtube_timeout_seconds,
         binary=settings.ytdlp_binary,
@@ -202,6 +214,7 @@ def create_app(
             "limits": {
                 "max_text_chars": settings.max_text_chars,
                 "max_ref_audio_bytes": settings.max_ref_audio_bytes,
+                "max_ref_audio_seconds": settings.max_ref_audio_seconds,
             },
             "asr_enabled": settings.load_asr,
             "asr_model": settings.asr_model if settings.load_asr else None,
@@ -359,9 +372,19 @@ def create_app(
         tmp_path = None
         try:
             if ref_bytes:
-                fd, tmp_path = tempfile.mkstemp(suffix=ref_suffix, prefix="omnivoice-")
+                # Gewünschter Ausschnitt (ref_start/ref_end) -- und zu lange
+                # Referenzen werden gekürzt, bevor sie den Speicher sprengen.
+                cut = await run_in_threadpool(
+                    fit_reference,
+                    ref_bytes,
+                    ref_suffix,
+                    start=_as_float(data.get("ref_start"), 0.0),
+                    end=_optional_float(data.get("ref_end")),
+                    max_seconds=settings.max_ref_audio_seconds,
+                )
+                fd, tmp_path = tempfile.mkstemp(suffix=cut.suffix, prefix="omnivoice-")
                 with os.fdopen(fd, "wb") as handle:
-                    handle.write(ref_bytes)
+                    handle.write(cut.data)
                 req.ref_audio_path = tmp_path
 
             try:
@@ -377,6 +400,8 @@ def create_app(
                 raise HTTPException(
                     status_code=500, detail=f"{type(exc).__name__}: {exc}"
                 ) from exc
+        except AudioEncodeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -591,6 +616,47 @@ def create_app(
     def _library_error(exc: LibraryError) -> HTTPException:
         return HTTPException(status_code=422, detail=str(exc))
 
+    async def _reference_upload(
+        form: Any,
+    ) -> tuple[Upload | None, dict[str, Any] | None, dict[str, Any] | None]:
+        """Hochgeladene Referenzaufnahme lesen und zurechtschneiden.
+
+        ``ref_start``/``ref_end`` (Sekunden) wählen einen Ausschnitt der
+        Datei; ohne Angabe zählt die ganze Datei. Länger als die Obergrenze
+        wird nichts: der Server kürzt statt abzuweisen. Zurück kommen die
+        Aufnahme, ihre Herkunft für ``voice.json`` und der Schnitt für die
+        Antwort (damit die Oberfläche auf einen gekürzten Referenztext
+        hinweisen kann).
+        """
+        upload = await _upload(
+            form,
+            "ref_audio",
+            limit=settings.max_ref_audio_bytes,
+            label="Das Referenz-Audio",
+        )
+        if upload is None:
+            return None, None, None
+        suffix = os.path.splitext(upload.filename or "")[1].lower()
+        try:
+            cut = await run_in_threadpool(
+                fit_reference,
+                upload.data,
+                suffix,
+                start=_as_float(form.get("ref_start"), 0.0),
+                end=_optional_float(form.get("ref_end")),
+                max_seconds=settings.max_ref_audio_seconds,
+            )
+        except AudioEncodeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        source = {"kind": "upload", "filename": upload.filename, **cut.as_dict()}
+        if cut.cut:
+            upload = Upload(
+                filename="reference" + cut.suffix,
+                data=cut.data,
+                media_type=cut.media_type,
+            )
+        return upload, source, cut.as_dict()
+
     async def _youtube_reference(
         form: Any,
     ) -> tuple[Upload | None, dict[str, Any] | None, str]:
@@ -688,14 +754,8 @@ def create_app(
     @app.post("/api/voices", status_code=201)
     async def create_voice(request: Request) -> dict[str, Any]:
         form = await request.form()
-        audio = await _upload(
-            form,
-            "ref_audio",
-            limit=settings.max_ref_audio_bytes,
-            label="Das Referenz-Audio",
-        )
+        audio, source, reference = await _reference_upload(form)
         # Ohne hochgeladene Datei darf ein YouTube-Ausschnitt einspringen.
-        source = None
         transcript = ""
         if audio is None:
             audio, source, transcript = await _youtube_reference(form)
@@ -727,6 +787,7 @@ def create_app(
         # benutzbar, deshalb wird sie standardmäßig gleich vorbereitet.
         # `prepare=false` überspringt das (z. B. für Stapel-Importe).
         payload = voices.describe(voice)
+        payload["reference"] = reference
         if _as_bool(form.get("prepare"), True):
             payload.update(await _prepare_quietly(voice))
         return payload
@@ -754,13 +815,7 @@ def create_app(
     async def update_voice(voice_id: str, request: Request) -> dict[str, Any]:
         _voice_or_404(voice_id)
         form = await request.form()
-        audio = await _upload(
-            form,
-            "ref_audio",
-            limit=settings.max_ref_audio_bytes,
-            label="Das Referenz-Audio",
-        )
-        source = None
+        audio, source, reference = await _reference_upload(form)
         transcript = ""
         if audio is None:
             audio, source, transcript = await _youtube_reference(form)
@@ -789,7 +844,9 @@ def create_app(
         # Ein neues Referenz-Audio ergibt einen neuen Fingerabdruck; der alte
         # Eintrag im Zwischenspeicher passt dann nicht mehr.
         voices.forget(voice_id)
-        return voices.describe(voice)
+        payload = voices.describe(voice)
+        payload["reference"] = reference
+        return payload
 
     @app.delete("/api/voices/{voice_id}")
     def delete_voice(voice_id: str) -> dict[str, Any]:

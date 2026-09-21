@@ -25,11 +25,14 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+
+from .audio import AUDIO_MEDIA_TYPES, probe_duration, reference_too_long
 
 ALLOWED_AUDIO_SUFFIXES = {
     ".wav",
@@ -45,14 +48,7 @@ ALLOWED_AUDIO_SUFFIXES = {
 ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 _MEDIA_TYPES = {
-    ".wav": "audio/wav",
-    ".mp3": "audio/mpeg",
-    ".flac": "audio/flac",
-    ".ogg": "audio/ogg",
-    ".m4a": "audio/mp4",
-    ".webm": "audio/webm",
-    ".opus": "audio/opus",
-    ".aac": "audio/aac",
+    **AUDIO_MEDIA_TYPES,
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -113,6 +109,8 @@ class Asset:
     media_type: str
     size: int
     sha256: str
+    # Länge in Sekunden (nur Audio; None, wenn nicht feststellbar).
+    seconds: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -120,15 +118,18 @@ class Asset:
             "media_type": self.media_type,
             "size": self.size,
             "sha256": self.sha256,
+            "seconds": round(self.seconds, 2) if self.seconds is not None else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Asset:
+        seconds = data.get("seconds")
         return cls(
             filename=str(data.get("filename") or ""),
             media_type=str(data.get("media_type") or "application/octet-stream"),
             size=int(data.get("size") or 0),
             sha256=str(data.get("sha256") or ""),
+            seconds=float(seconds) if isinstance(seconds, (int, float)) else None,
         )
 
 
@@ -210,10 +211,13 @@ class VoiceLibrary:
         root: str,
         max_audio_bytes: int = 25 * 1024 * 1024,
         max_image_bytes: int = 5 * 1024 * 1024,
+        max_audio_seconds: int = 0,
     ) -> None:
         self.root = os.path.abspath(os.path.expanduser(root))
         self.max_audio_bytes = max_audio_bytes
         self.max_image_bytes = max_image_bytes
+        # 0 = Länge nicht prüfen.
+        self.max_audio_seconds = max_audio_seconds
         self._lock = threading.Lock()
 
     # -- Pfade -----------------------------------------------------------
@@ -340,8 +344,12 @@ class VoiceLibrary:
             if language is not None:
                 voice.language = language.strip() or None
             if audio is not None:
-                self._remove_asset(folder, voice.audio)
+                previous = voice.audio
                 voice.audio = self._store_asset(folder, audio, kind="audio")
+                # Erst ablegen, dann aufräumen: fällt die neue Datei durch
+                # die Prüfung, bleibt die alte Aufnahme stehen.
+                if previous and previous.filename != voice.audio.filename:
+                    self._remove_asset(folder, previous)
                 # Die Herkunft gehört zur Aufnahme: neue Aufnahme, neue (oder
                 # gar keine) Quelle.
                 voice.source = source or None
@@ -465,6 +473,7 @@ class VoiceLibrary:
             raise LibraryError(f"{label} ist leer.")
 
         filename = stem + suffix
+        seconds = self._audio_seconds(upload, suffix) if kind == "audio" else None
         _atomic_write(os.path.join(folder, filename), upload.data)
         return Asset(
             filename=filename,
@@ -472,7 +481,33 @@ class VoiceLibrary:
             or _MEDIA_TYPES.get(suffix, "application/octet-stream"),
             size=len(upload.data),
             sha256=_sha256(upload.data),
+            seconds=seconds,
         )
+
+    def _audio_seconds(self, upload: Upload, suffix: str) -> float | None:
+        """Länge der Aufnahme messen -- und zu lange abweisen.
+
+        Normalerweise hat die Web-API vorher schon zurechtgeschnitten
+        (:func:`omnivoice_server.audio.fit_reference`); hier ist das Netz
+        darunter, damit nichts das Modell erreicht, was den Speicher sprengt.
+        """
+        fd, tmp = tempfile.mkstemp(suffix=suffix, prefix="omnivoice-ref-")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(upload.data)
+            seconds = probe_duration(tmp)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        if (
+            seconds is not None
+            and self.max_audio_seconds > 0
+            and seconds > self.max_audio_seconds
+        ):
+            raise LibraryError(reference_too_long(seconds, self.max_audio_seconds))
+        return seconds
 
     @staticmethod
     def _remove_asset(folder: str, asset: Asset | None) -> None:

@@ -157,7 +157,8 @@ schneidet ihn mit ffmpeg aus der geladenen Tonspur und legt ihn als
 `reference.mp3` bei der Person ab. Woher er stammt (Link, Titel, Start und
 Ende), steht in ihrer `voice.json` und in den Details als Link zurück auf die
 Stelle im Video. Standardgrenzen: Video höchstens 60 Minuten, Ausschnitt
-höchstens 120 Sekunden (`OMNIVOICE_YOUTUBE_MAX_*`).
+höchstens 20 Sekunden (`OMNIVOICE_YOUTUBE_MAX_*`, siehe auch den Hinweis
+zur Länge unten).
 
 **Bild suchen.** Neben dem Namensfeld sucht „🔍 Bild suchen“ ein Bild zur
 Person bei Wikipedia und Wikimedia Commons – ohne Zugangsschlüssel, mit
@@ -167,9 +168,12 @@ aus; heruntergeladen wird es erst beim Speichern (und nur von
 darunter in die Bildersuche von DuckDuckGo, Google und Bing – von dort wird
 das Bild wie gewohnt als Datei ausgewählt.
 
-Ein **Klick auf eine Person** öffnet ihre Details: Referenzaufnahme anhören,
-Name, Bild, Aufnahme, Referenztext und Notiz ändern – und die Knöpfe
-„Verwenden“, „Vorbereiten“ bzw. „Neu berechnen“ und „Löschen“.
+Ein **Klick auf eine Person** öffnet ihre Details: die hinterlegte
+Referenzaufnahme anhören und herunterladen – dazu Dateiname, Länge, Größe,
+der Pfad im Datenordner und die Herkunft (YouTube-Stelle oder Name der
+hochgeladenen Datei samt geschnittenem Bereich) –, Name, Bild, Aufnahme,
+Referenztext und Notiz ändern, und die Knöpfe „Verwenden“, „Vorbereiten“
+bzw. „Neu berechnen“ und „Löschen“.
 
 Neu angelegte Personen werden gleich vorbereitet („Stimme direkt für dieses
 Modell vorbereiten“, voreingestellt); das Anlegen dauert dadurch etwas länger,
@@ -231,6 +235,34 @@ Neustart des Containers.
 
 ![Stimme klonen](docs/screenshot-clone.png)
 
+**Hinweis zur Länge der Referenz:** Zum Klonen reichen 3–10 Sekunden;
+längere Aufnahmen machen die Stimme nicht besser, brauchen aber ein
+Vielfaches an Arbeitsspeicher. OmniVoice kürzt Aufnahmen über 20 Sekunden
+nur dann selbst, wenn *kein* Referenztext angegeben ist – mit Transkript
+(etwa aus YouTube-Untertiteln) geht die volle Länge ins Modell, und auf einer
+CPU reicht eine halbe Minute, um den Container aus dem Speicher zu werfen
+(`exited with code 137`). Der Server lässt deshalb keine Referenzaufnahme
+über **20 Sekunden** zum Modell durch, sondern schneidet vorher zu:
+
+* Im Personen-Dialog bekommt eine hochgeladene Datei denselben Player mit
+  „⏱ Start hier“ / „⏱ Ende hier“ / „▶ Ausschnitt anhören“ wie ein
+  YouTube-Video. Ist die Datei länger als die Grenze, steht der Bereich auf
+  den ersten 20 Sekunden – der beste Ausschnitt lässt sich beim Anhören
+  setzen; ein zu langer Bereich endet automatisch an der Grenze.
+* Gespeichert wird nur der Ausschnitt (als `reference.wav`, verlustfrei
+  geschnitten mit ffmpeg). Wer die API ohne Zeitmarken benutzt, bekommt die
+  ersten 20 Sekunden.
+* War die Datei länger als erlaubt, bleibt der Dialog nach dem Speichern
+  offen und bittet, den **Referenztext** zu prüfen – er muss genau zu dem
+  gespeicherten Ausschnitt passen, nicht zur ganzen Datei.
+
+Der YouTube-Ausschnitt ist auf dieselbe Länge begrenzt. Wer mehr Speicher
+hat, hebt die Grenze in der `.env` an (`0` schaltet das Zuschneiden ab):
+
+```env
+OMNIVOICE_MAX_REF_AUDIO_SECONDS=20
+```
+
 **Hinweis zum Referenztext:** Ohne Referenztext transkribiert OmniVoice das
 Referenz-Audio automatisch mit Whisper. Dieses Modell ist ein zusätzlicher
 Download von mehreren GB und deshalb standardmäßig **aus**. Entweder den
@@ -269,7 +301,7 @@ passend zur Maschine und benutzt ansonsten exakt die Upstream-Oberfläche.
 | `POST` | `/api/tts` | Synthese, Antwort ist eine WAV- oder MP3-Datei |
 | `POST` | `/api/convert` | fertiges WAV in ein anderes Format umrechnen (`audio`, `format`) |
 | `GET` | `/api/voices` | Stimm-Bibliothek auflisten (inkl. „berechnet?“) |
-| `POST` | `/api/voices` | Person anlegen (multipart: `name`, `ref_audio`, `ref_text`, `image`, …; `prepare=false` überspringt das Berechnen) |
+| `POST` | `/api/voices` | Person anlegen (multipart: `name`, `ref_audio` (+ `ref_start`/`ref_end`), `ref_text`, `image`, …; `prepare=false` überspringt das Berechnen) |
 | `GET` `POST` `DELETE` | `/api/voices/{id}` | einzelne Person lesen, ändern, löschen |
 | `GET` | `/api/voices/{id}/audio` · `/image` | hinterlegte Dateien |
 | `POST` | `/api/voices/{id}/prepare` | Stimme für das geladene Modell berechnen |
@@ -303,7 +335,9 @@ curl -X POST http://localhost:7860/api/tts \
 
 Felder: `text` (Pflicht), `mode` (`auto` | `clone` | `design`), `voice_id`,
 `language`, `instruct`, `ref_audio`, `ref_text`, `num_step`, `guidance_scale`,
-`speed`, `duration`, `denoise`, `normalize_text`, `format`.
+`speed`, `duration`, `denoise`, `normalize_text`, `format`. Zu `ref_audio`
+wählen `ref_start` und `ref_end` (Sekunden) einen Ausschnitt; was länger als
+`OMNIVOICE_MAX_REF_AUDIO_SECONDS` ist, wird ohnehin gekürzt.
 
 `format` ist `wav` (Standard) oder `mp3`; die Bitrate steuert
 `OMNIVOICE_MP3_BITRATE`. Ein schon erzeugtes WAV lässt sich auch ohne neue
@@ -337,6 +371,10 @@ curl -X POST http://localhost:7860/api/voices \
   -F image=@anna.jpg
 # Die Stimme wird dabei gleich berechnet (`-F prepare=false` überspringt das):
 # {"id": "anna-beispiel-a1b2c3", "prepared": true, ...}
+# Aus einer längeren Aufnahme nur einen Ausschnitt nehmen (Sekunden):
+#   -F ref_start=12.5 -F ref_end=21
+# Ohne Zeitmarken bleiben von einer zu langen Datei die ersten 20 Sekunden;
+# die Antwort sagt es unter "reference": {"auto_trimmed": true, ...}.
 
 # und benutzen
 curl -X POST http://localhost:7860/api/tts \

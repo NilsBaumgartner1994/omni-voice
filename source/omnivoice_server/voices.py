@@ -13,6 +13,7 @@ Damit hängt am Modell nur noch das Berechnete: Gewichte tauschen, einmal
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -54,6 +55,12 @@ class VoiceService:
         payload["model_key"] = self.model_key
         payload["has_audio"] = voice.audio is not None
         payload["has_image"] = voice.image is not None
+        # Wo die Aufnahme im Datenordner liegt -- zum Wiederfinden von Hand.
+        payload["audio_path"] = (
+            os.path.join(self.library.root, voice.id, voice.audio.filename)
+            if voice.audio
+            else None
+        )
         return payload
 
     def _key(self, voice: Voice) -> tuple[str, str, str]:

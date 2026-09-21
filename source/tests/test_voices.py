@@ -9,6 +9,7 @@ import wave
 import pytest
 from fastapi.testclient import TestClient
 
+from omnivoice_server import audio
 from omnivoice_server.app import create_app
 from omnivoice_server.config import Settings
 from omnivoice_server.engine import DummyEngine
@@ -31,6 +32,16 @@ PNG = (
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
     b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+
+
+needs_ffmpeg = pytest.mark.skipif(
+    not audio.mp3_supported(), reason="ffmpeg ist hier nicht installiert"
+)
+
+
+def _wav_seconds(payload: bytes) -> float:
+    with wave.open(io.BytesIO(payload)) as handle:
+        return handle.getnframes() / handle.getframerate()
 
 
 @pytest.fixture()
@@ -258,3 +269,98 @@ def test_info_exposes_the_model_key(client: TestClient) -> None:
     info = client.get("/api/info").json()
     assert info["voice_model_key"]
     assert info["library_dir"]
+
+
+def test_library_rejects_overlong_reference_audio(tmp_path) -> None:
+    # Die Bibliothek ist das Netz unter der Web-API: was zu lang ist, kommt
+    # nicht auf die Platte -- die API schneidet vorher zurecht.
+    library = VoiceLibrary(str(tmp_path / "voices"), max_audio_seconds=10)
+    with pytest.raises(Exception, match="höchstens 10 Sekunden"):
+        library.create(name="Anna", audio=Upload("lang.wav", _wav(seconds=30.0)))
+    assert library.list() == [], "nichts Halbfertiges zurücklassen"
+
+    voice = library.create(name="Anna", audio=Upload("kurz.wav", _wav(seconds=5.0)))
+    assert voice.audio.seconds == pytest.approx(5.0)
+    # Fällt die neue Aufnahme durch, bleibt die alte stehen.
+    with pytest.raises(Exception, match="höchstens 10 Sekunden"):
+        library.update(voice.id, audio=Upload("lang.wav", _wav(seconds=30.0)))
+    assert library.audio_path(voice.id) is not None
+    assert library.get(voice.id).audio.sha256 == voice.audio.sha256
+
+
+def _client_with_limit(tmp_path, seconds: int = 10) -> TestClient:
+    settings = Settings(
+        engine="dummy",
+        library_dir=str(tmp_path / "voices"),
+        max_ref_audio_seconds=seconds,
+    )
+    engine = DummyEngine(settings)
+    engine.load()
+    app = create_app(settings, engine=engine, load_on_startup=False)
+    return TestClient(app)
+
+
+@needs_ffmpeg
+def test_api_trims_overlong_reference_audio(tmp_path) -> None:
+    with _client_with_limit(tmp_path) as client:
+        response = client.post(
+            "/api/voices",
+            data={"name": "Anna", "ref_text": "Hallo", "prepare": "false"},
+            files={"ref_audio": ("lang.wav", _wav(seconds=30.0), "audio/wav")},
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        # Gekürzt auf die Grenze, und die Antwort sagt das -- die Oberfläche
+        # bittet dann, den Referenztext zu prüfen.
+        assert body["audio"]["seconds"] == pytest.approx(10.0, abs=0.05)
+        assert body["reference"]["auto_trimmed"] is True
+        assert body["reference"]["original_seconds"] == pytest.approx(30.0)
+        assert body["source"]["kind"] == "upload"
+        assert body["source"]["filename"] == "lang.wav"
+        assert body["audio_path"].endswith(f"{body['id']}/reference.wav")
+        served = client.get(f"/api/voices/{body['id']}/audio")
+        assert served.status_code == 200
+        assert _wav_seconds(served.content) == pytest.approx(10.0, abs=0.05)
+        # Der YouTube-Ausschnitt darf nicht länger sein als jede andere Referenz.
+        assert client.get("/api/info").json()["youtube"]["max_clip_seconds"] == 10
+
+
+@needs_ffmpeg
+def test_api_cuts_the_chosen_range(tmp_path) -> None:
+    with _client_with_limit(tmp_path) as client:
+        response = client.post(
+            "/api/voices",
+            data={
+                "name": "Anna",
+                "prepare": "false",
+                "ref_start": "2.5",
+                "ref_end": "6.5",
+            },
+            files={"ref_audio": ("lang.wav", _wav(seconds=30.0), "audio/wav")},
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["audio"]["seconds"] == pytest.approx(4.0, abs=0.05)
+        assert body["reference"]["auto_trimmed"] is False
+        assert body["source"]["start"] == 2.5
+        assert body["source"]["end"] == 6.5
+
+        # Kurze Dateien ohne Wunsch bleiben unangetastet (Original-Endung).
+        short = client.post(
+            "/api/voices",
+            data={"name": "Bea", "prepare": "false"},
+            files={"ref_audio": ("kurz.wav", _wav(seconds=5.0), "audio/wav")},
+        ).json()
+        assert short["reference"]["cut"] is False
+        assert short["audio"]["seconds"] == pytest.approx(5.0)
+
+        # Ein zu langer Wunsch wird an der Grenze abgeschnitten -- vom Start aus.
+        updated = client.post(
+            f"/api/voices/{body['id']}",
+            data={"ref_start": "5", "ref_end": "25"},
+            files={"ref_audio": ("lang.wav", _wav(seconds=30.0), "audio/wav")},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["audio"]["seconds"] == pytest.approx(10.0, abs=0.05)
+        assert updated.json()["source"]["start"] == 5.0
+        assert updated.json()["source"]["end"] == 15.0

@@ -16,8 +16,10 @@ const state = {
   // "youtube"), das geladene Video und das in der Suche gewählte Bild.
   voiceSource: "file",
   video: null,
-  // Läuft der Ausschnitt gerade? Dann hält dieser Handler ihn am Ende an.
-  rangeWatcher: null,
+  // Die gewählte Datei (Länge kennt der Browser erst nach dem Laden).
+  file: null,
+  // Die beiden Bereichs-Editoren (Datei, YouTube), siehe rangeEditor().
+  ranges: {},
   // Steht im Referenztext das Transkript (dann darf es mitwandern) oder
   // etwas Selbstgeschriebenes (dann bleibt es stehen)?
   transcriptTaken: false,
@@ -536,12 +538,11 @@ async function submitVoiceForm(event) {
   // YouTube-Videos; beim Bearbeiten darf beides leer bleiben.
   const audio = state.voiceSource === "file" ? $("voice-audio").files[0] : null;
   const clip = state.voiceSource === "youtube" && state.video ? currentRange() : null;
+  // Bei einer Datei zählt der im Player gewählte Bereich; der Server
+  // schneidet ihn heraus (und kürzt zu Lange ohnehin auf die Grenze).
+  const fileRange = audio && state.file ? state.ranges.file.range() : null;
   if (clip && clip.end <= clip.start) {
     libraryError("Bitte Start- und Endzeit des Ausschnitts wählen.");
-    return;
-  }
-  if (clip && clip.end - clip.start > maxClipSeconds()) {
-    libraryError(`Der Ausschnitt darf höchstens ${maxClipSeconds()} Sekunden lang sein.`);
     return;
   }
   if (!state.editing && !audio && !clip) {
@@ -559,6 +560,10 @@ async function submitVoiceForm(event) {
   form.set("description", $("voice-description").value.trim());
   form.set("language", $("voice-language").value);
   if (audio) form.set("ref_audio", audio, audio.name);
+  if (fileRange && fileRange.end > fileRange.start) {
+    form.set("ref_start", fileRange.start.toFixed(2));
+    form.set("ref_end", fileRange.end.toFixed(2));
+  }
   if (clip) {
     form.set("youtube_video_id", state.video.id);
     form.set("youtube_url", state.video.url);
@@ -583,7 +588,17 @@ async function submitVoiceForm(event) {
     clip ? "Schneide & speichere …" : prepare ? "Speichere & bereite vor …" : "Speichere …",
   );
   if (!saved) return;
-  closeVoiceDialog();
+  // War die Datei länger als erlaubt, liegt jetzt nur ein Ausschnitt in der
+  // Bibliothek – ein Referenztext zur ganzen Datei passt dann nicht mehr:
+  // der Dialog bleibt offen, zeigt die Person mit Hinweis, Cursor im Text.
+  // (Nicht schließen und neu öffnen: das "close"-Ereignis des Dialogs käme
+  // verspätet und würde das frisch gefüllte Formular wieder leeren.)
+  const reference = saved.reference || {};
+  const limit = maxReferenceSeconds();
+  const shortened =
+    reference.auto_trimmed ||
+    (reference.cut && limit && Number(reference.original_seconds) > limit);
+  if (!shortened) closeVoiceDialog();
   await loadVoices();
   // Die Person steht, nur das Rechnen ging schief – das ist ein Hinweis,
   // kein verlorenes Formular.
@@ -591,6 +606,18 @@ async function submitVoiceForm(event) {
     libraryError(
       `„${saved.name}" ist gespeichert, aber noch nicht vorbereitet: ${saved.error}`,
     );
+  }
+  if (shortened && voiceById(saved.id)) {
+    openVoice(saved.id);
+    const note = $("voice-trim-note");
+    note.hidden = false;
+    note.textContent =
+      `Die Datei war ${fmtSeconds(reference.original_seconds)} lang; gespeichert ` +
+      `ist der Ausschnitt ${clockSeconds(reference.start)} – ` +
+      `${clockSeconds(reference.end)}` +
+      (reference.auto_trimmed ? " (automatisch auf die Obergrenze gekürzt)" : "") +
+      ". Bitte den Referenztext prüfen: er muss genau zu diesem Ausschnitt passen.";
+    $("voice-ref-text").focus();
   }
 }
 
@@ -610,20 +637,61 @@ function openVoice(id) {
   const current = $("voice-audio-current");
   $("voice-current").hidden = !voice.has_audio;
   if (voice.has_audio) current.src = `/api/voices/${id}/audio?v=${voice.revision}`;
+  renderVoiceAudioInfo(voice);
   renderVoiceOrigin(voice.source);
   openVoiceDialog();
 }
 
-// Woher die hinterlegte Aufnahme stammt (steht nur bei YouTube-Quellen in
-// voice.json) – als Link zurück auf die Stelle im Video.
+// Welche Datei im Datenordner liegt: Name, Länge, Größe, Pfad – und ein
+// Link zum Herunterladen, damit sich die Aufnahme auch außerhalb prüfen lässt.
+function renderVoiceAudioInfo(voice) {
+  const node = $("voice-audio-info");
+  node.innerHTML = "";
+  if (!voice.audio) return;
+  const bits = [voice.audio.filename];
+  if (voice.audio.seconds != null) bits.push(fmtSeconds(voice.audio.seconds));
+  if (voice.audio.size) bits.push(fmtBytes(voice.audio.size));
+  node.append(bits.join(" · ") + " · ");
+  const link = document.createElement("a");
+  link.href = `/api/voices/${voice.id}/audio?v=${voice.revision}`;
+  link.download = `${voice.id}-${voice.audio.filename}`;
+  link.textContent = "herunterladen";
+  node.appendChild(link);
+  if (voice.audio_path) {
+    const path = document.createElement("code");
+    path.textContent = voice.audio_path;
+    node.append(document.createElement("br"), path);
+  }
+}
+
+// Woher die hinterlegte Aufnahme stammt (steht in voice.json): bei YouTube
+// als Link zurück auf die Stelle im Video, bei Dateien Name und Ausschnitt.
 function renderVoiceOrigin(source) {
   const node = $("voice-source");
   node.innerHTML = "";
-  if (!source || source.kind !== "youtube") {
+  if (!source || !source.kind) {
     node.hidden = true;
     return;
   }
   node.hidden = false;
+  if (source.kind === "upload") {
+    const bits = [`Quelle: Datei „${source.filename || "?"}"`];
+    if (source.cut) {
+      bits.push(
+        `Ausschnitt ${clockSeconds(source.start)} – ${clockSeconds(source.end)}` +
+          (source.original_seconds != null
+            ? ` von ${fmtSeconds(source.original_seconds)}`
+            : ""),
+      );
+      if (source.auto_trimmed) bits.push("automatisch auf die Obergrenze gekürzt");
+    }
+    node.textContent = bits.join(" · ");
+    return;
+  }
+  if (source.kind !== "youtube") {
+    node.hidden = true;
+    return;
+  }
   node.append(
     `Quelle: ${source.title || "YouTube"} · ` +
       `${clockSeconds(source.start)} – ${clockSeconds(source.end)} · `,
@@ -645,8 +713,13 @@ function newVoice() {
 function openVoiceDialog() {
   const dialog = $("voice-dialog");
   renderDialogState();
-  if (typeof dialog.showModal === "function") dialog.showModal();
-  else dialog.setAttribute("open", "");
+  if (dialog.open) {
+    dialog.scrollTop = 0;
+  } else if (typeof dialog.showModal === "function") {
+    dialog.showModal();
+  } else {
+    dialog.setAttribute("open", "");
+  }
   $("voice-name").focus();
 }
 
@@ -655,6 +728,7 @@ function closeVoiceDialog() {
   if (typeof dialog.close === "function") dialog.close();
   else dialog.removeAttribute("open");
   $("voice-audio-current").pause();
+  $("voice-audio-current").removeAttribute("src");
   resetVoiceForm();
 }
 
@@ -692,9 +766,11 @@ function resetVoiceForm() {
   state.editing = null;
   $("voice-form").reset();
   $("voice-image-preview").hidden = true;
-  $("voice-audio-preview").hidden = true;
   $("voice-current").hidden = true;
   $("voice-source").hidden = true;
+  $("voice-trim-note").hidden = true;
+  $("voice-audio-info").innerHTML = "";
+  resetFile();
   $("image-results").hidden = true;
   $("image-search-links").hidden = true;
   clearImageChoice();
@@ -753,6 +829,11 @@ function applySourceSupport(info) {
     ? "Link einfügen, laden, dann Start und Ende wählen – auch während der " +
       `Wiedergabe. Ausschnitt: höchstens ${maxClipSeconds()} Sekunden.`
     : `YouTube-Links gehen hier nicht: ${youtube.reason || "nicht verfügbar"}`;
+  const limit = maxReferenceSeconds();
+  $("file-hint").textContent = limit
+    ? `Längere Aufnahmen lassen sich hier zuschneiden; ohne Auswahl bleiben ` +
+      `die ersten ${limit} Sekunden.`
+    : "";
   const search = info.image_search || {};
   $("voice-image-search").title = search.enabled
     ? "Bild zu diesem Namen im Internet suchen"
@@ -763,6 +844,22 @@ function applySourceSupport(info) {
 function maxClipSeconds() {
   const youtube = (state.info && state.info.youtube) || {};
   return Number(youtube.max_clip_seconds) || 120;
+}
+
+// Obergrenze für jede Referenzaufnahme (0 = der Server prüft nicht).
+function maxReferenceSeconds() {
+  const limits = (state.info && state.info.limits) || {};
+  return Number(limits.max_ref_audio_seconds) || 0;
+}
+
+function fmtSeconds(seconds) {
+  return `${(Number(seconds) || 0).toFixed(1).replace(".", ",")} s`;
+}
+
+function fmtBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(value / 1024))} KB`;
 }
 
 // Sekunden als "1:23,4" – im Formular selbst stehen weiterhin Sekunden,
@@ -781,18 +878,154 @@ function setVoiceSource(kind) {
   }
   $("voice-source-file").hidden = kind !== "file";
   $("voice-source-youtube").hidden = kind !== "youtube";
-  if (kind !== "youtube") stopRange();
+  for (const editor of Object.values(state.ranges)) editor.stop();
+}
+
+// Ein Bereichs-Editor: Player plus Start/Ende-Marken, "Ausschnitt anhören"
+// und eine Zeile, die Länge und Grenzen erklärt. Zwei Stück gibt es davon –
+// für die hochgeladene Datei und für die YouTube-Tonspur –, deshalb hängen
+// die Elemente an einem Präfix (file-… / yt-…).
+function rangeEditor(prefix, { limit, duration, onChange }) {
+  const audio = $(`${prefix}-audio`);
+  const startInput = $(`${prefix}-start`);
+  const endInput = $(`${prefix}-end`);
+  let watcher = null;
+
+  function range() {
+    const total = duration() || 0;
+    const max = limit();
+    let start = Math.max(0, Number(startInput.value) || 0);
+    let end = Math.max(0, Number(endInput.value) || 0);
+    if (total) {
+      start = Math.min(start, total);
+      end = Math.min(end, total);
+    }
+    // Zu lang? Dann endet der Ausschnitt an der Grenze – genau so würde
+    // der Server ihn ohnehin schneiden, und Transkript wie Hinweis stimmen.
+    if (max && end - start > max) end = start + max;
+    return { start, end, duration: total, clamped: max && end - start >= max };
+  }
+
+  function render() {
+    const { start, end, duration: total, clamped } = range();
+    const length = end - start;
+    const parts = [
+      `Ausschnitt ${clockSeconds(start)} – ${clockSeconds(end)}`,
+      `${length.toFixed(1)} s von ${clockSeconds(total)}`,
+    ];
+    if (length <= 0) {
+      parts.push("⚠ Das Ende muss hinter dem Start liegen.");
+    } else if (clamped && Number(endInput.value) > end + 0.05) {
+      parts.push(`Auf ${limit()} Sekunden gekürzt – mehr geht nicht.`);
+    } else if (length < 2) {
+      parts.push("⚠ Sehr kurz – 3 bis 10 Sekunden klingen am besten.");
+    }
+    $(`${prefix}-range-hint`).textContent = parts.join(" · ");
+    if (onChange) onChange(range());
+  }
+
+  // Start/Ende aus der laufenden Wiedergabe übernehmen.
+  function markStart() {
+    const { end } = range();
+    const start = Math.max(0, audio.currentTime || 0);
+    startInput.value = start.toFixed(1);
+    if (end <= start) {
+      const total = duration() || start + 10;
+      endInput.value = Math.min(start + 10, (limit() || 10) + start, total).toFixed(1);
+    }
+    render();
+  }
+
+  function markEnd() {
+    endInput.value = Math.max(0, audio.currentTime || 0).toFixed(1);
+    render();
+  }
+
+  function stop() {
+    if (!watcher) return;
+    audio.removeEventListener("timeupdate", watcher);
+    watcher = null;
+  }
+
+  // Den gewählten Bereich anhören: an der Endmarke hält die Wiedergabe an.
+  function play() {
+    const { start, end } = range();
+    if (end <= start) {
+      libraryError("Bitte erst Start und Ende setzen.");
+      return;
+    }
+    stop();
+    audio.currentTime = start;
+    watcher = () => {
+      if (audio.currentTime >= end) {
+        audio.pause();
+        stop();
+      }
+    };
+    audio.addEventListener("timeupdate", watcher);
+    audio.play().catch(() => {});
+  }
+
+  // Voreinstellung: von `from` aus höchstens `seconds` – oder alles.
+  function preset(from, seconds) {
+    const total = duration() || 0;
+    startInput.value = String(from);
+    endInput.value = String(
+      Math.min(from + seconds, total || from + seconds).toFixed(1),
+    );
+    render();
+  }
+
+  function reset() {
+    stop();
+    audio.removeAttribute("src");
+    startInput.value = "0";
+    endInput.value = "0";
+    $(`${prefix}-range-hint`).textContent = "";
+  }
+
+  $(`${prefix}-set-start`).addEventListener("click", markStart);
+  $(`${prefix}-set-end`).addEventListener("click", markEnd);
+  $(`${prefix}-play-range`).addEventListener("click", play);
+  startInput.addEventListener("input", render);
+  endInput.addEventListener("input", render);
+  return { range, render, play, stop, preset, reset, audio };
 }
 
 function currentRange() {
-  const duration = (state.video && state.video.duration) || 0;
-  let start = Math.max(0, Number($("yt-start").value) || 0);
-  let end = Math.max(0, Number($("yt-end").value) || 0);
-  if (duration) {
-    start = Math.min(start, duration);
-    end = Math.min(end, duration);
+  return state.ranges.yt.range();
+}
+
+// -- Datei: Player mit Zeitmarken, damit auch ein langer Mitschnitt passt --
+function chooseFile(file) {
+  resetFile();
+  if (!file) return;
+  state.file = { name: file.name, duration: 0 };
+  const editor = state.ranges.file;
+  editor.audio.src = URL.createObjectURL(file);
+  $("file-result").hidden = false;
+  $("file-range-hint").textContent = "Aufnahme wird geladen …";
+}
+
+// Erst wenn der Browser die Länge kennt, lässt sich ein Bereich vorschlagen:
+// alles, wenn es passt – sonst die ersten Sekunden bis zur Grenze.
+function fileLoaded() {
+  if (!state.file) return;
+  const editor = state.ranges.file;
+  const total = Number.isFinite(editor.audio.duration) ? editor.audio.duration : 0;
+  state.file.duration = total;
+  const limit = maxReferenceSeconds();
+  editor.preset(0, limit && total > limit ? limit : total || 10);
+  if (limit && total > limit) {
+    $("file-range-hint").textContent +=
+      ` · Die Datei ist länger als ${limit} s: bitte den besten Ausschnitt wählen.`;
   }
-  return { start, end, duration };
+}
+
+function resetFile() {
+  state.file = null;
+  if (state.ranges.file) state.ranges.file.reset();
+  $("file-result").hidden = true;
 }
 
 // Das Transkript des Videos ist nach Zeitmarken sortiert; für den Ausschnitt
@@ -807,24 +1040,9 @@ function transcriptForRange(start, end) {
     .trim();
 }
 
-function renderRange() {
+// Läuft nach jeder Änderung des YouTube-Bereichs: Transkript nachziehen.
+function renderTranscript({ start, end }) {
   if (!state.video) return;
-  const { start, end, duration } = currentRange();
-  const length = end - start;
-  const limit = maxClipSeconds();
-  const parts = [
-    `Ausschnitt ${clockSeconds(start)} – ${clockSeconds(end)}`,
-    `${length.toFixed(1)} s von ${clockSeconds(duration)}`,
-  ];
-  if (length <= 0) {
-    parts.push("⚠ Das Ende muss hinter dem Start liegen.");
-  } else if (length > limit) {
-    parts.push(`⚠ Höchstens ${limit} Sekunden.`);
-  } else if (length < 2) {
-    parts.push("⚠ Sehr kurz – 3 bis 10 Sekunden klingen am besten.");
-  }
-  $("yt-range-hint").textContent = parts.join(" · ");
-
   const transcript = transcriptForRange(start, end);
   const box = $("yt-transcript-box");
   const hasSegments = ((state.video.transcript || []).length || 0) > 0;
@@ -891,70 +1109,17 @@ async function loadYoutube(node) {
   if (data.thumbnail) thumb.src = data.thumbnail;
   $("yt-audio").src = data.audio_url;
   // Voreinstellung: die ersten Sekunden – von dort aus wird gesucht.
-  $("yt-start").value = "0";
-  $("yt-end").value = String(
-    Math.min(10, maxClipSeconds(), Math.max(1, data.duration || 10)),
-  );
+  state.ranges.yt.preset(0, Math.min(10, maxClipSeconds()));
   $("yt-hint").textContent =
     "Beim Abspielen mit „Start hier“ und „Ende hier“ den Ausschnitt setzen.";
-  renderRange();
-}
-
-// Start/Ende aus der laufenden Wiedergabe übernehmen.
-function markStart() {
-  const audio = $("yt-audio");
-  const { end } = currentRange();
-  const start = Math.max(0, audio.currentTime || 0);
-  $("yt-start").value = start.toFixed(1);
-  if (end <= start) {
-    const duration = (state.video && state.video.duration) || start + 10;
-    $("yt-end").value = Math.min(start + 10, maxClipSeconds() + start, duration)
-      .toFixed(1);
-  }
-  renderRange();
-}
-
-function markEnd() {
-  const audio = $("yt-audio");
-  $("yt-end").value = Math.max(0, audio.currentTime || 0).toFixed(1);
-  renderRange();
-}
-
-function stopRange() {
-  if (!state.rangeWatcher) return;
-  $("yt-audio").removeEventListener("timeupdate", state.rangeWatcher);
-  state.rangeWatcher = null;
-}
-
-// Den gewählten Bereich anhören: an der Endmarke hält die Wiedergabe an.
-function playRange() {
-  const audio = $("yt-audio");
-  const { start, end } = currentRange();
-  if (end <= start) {
-    libraryError("Bitte erst Start und Ende setzen.");
-    return;
-  }
-  stopRange();
-  audio.currentTime = start;
-  const watcher = () => {
-    if (audio.currentTime >= end) {
-      audio.pause();
-      stopRange();
-    }
-  };
-  audio.addEventListener("timeupdate", watcher);
-  state.rangeWatcher = watcher;
-  audio.play().catch(() => {});
 }
 
 function resetYoutube() {
-  stopRange();
   state.video = null;
   state.transcriptTaken = false;
+  if (state.ranges.yt) state.ranges.yt.reset();
   $("yt-result").hidden = true;
-  $("yt-audio").removeAttribute("src");
   $("yt-thumb").hidden = true;
-  $("yt-range-hint").textContent = "";
   $("yt-transcript").textContent = "";
   $("yt-transcript-box").hidden = true;
   if (state.info) applySourceSupport(state.info);
@@ -1220,11 +1385,18 @@ document.addEventListener("DOMContentLoaded", () => {
     // Eine eigene Datei sticht das gefundene Bild aus.
     if (file) clearImageChoice();
   });
+  state.ranges.file = rangeEditor("file", {
+    limit: maxReferenceSeconds,
+    duration: () => (state.file && state.file.duration) || 0,
+  });
+  state.ranges.yt = rangeEditor("yt", {
+    limit: maxClipSeconds,
+    duration: () => (state.video && state.video.duration) || 0,
+    onChange: renderTranscript,
+  });
+  $("file-audio").addEventListener("loadedmetadata", fileLoaded);
   $("voice-audio").addEventListener("change", (event) => {
-    const file = event.target.files[0];
-    const preview = $("voice-audio-preview");
-    preview.hidden = !file;
-    if (file) preview.src = URL.createObjectURL(file);
+    chooseFile(event.target.files[0]);
   });
   for (const tab of document.querySelectorAll("[data-source]")) {
     tab.addEventListener("click", () => setVoiceSource(tab.dataset.source));
@@ -1236,12 +1408,7 @@ document.addEventListener("DOMContentLoaded", () => {
     event.preventDefault();
     loadYoutube($("yt-load"));
   });
-  $("yt-set-start").addEventListener("click", markStart);
-  $("yt-set-end").addEventListener("click", markEnd);
-  $("yt-play-range").addEventListener("click", playRange);
   $("yt-use-transcript").addEventListener("click", useTranscript);
-  $("yt-start").addEventListener("input", renderRange);
-  $("yt-end").addEventListener("input", renderRange);
   // Von Hand geschriebener Referenztext bleibt stehen.
   $("voice-ref-text").addEventListener("input", () => {
     state.transcriptTaken = false;
